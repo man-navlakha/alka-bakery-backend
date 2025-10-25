@@ -14,8 +14,6 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// --- Security Middleware ---
-// Apply Helmet first for security headers
 app.use(helmet());
 
 // Configure CORS
@@ -25,12 +23,9 @@ app.use(
     credentials: true,               // Allow cookies and authorization headers
   })
 );
-
-// --- Body Parsers & Cookie Parser ---
-// Parse JSON request bodies
 app.use(express.json());
-// Parse cookies BEFORE any routes that need them
 app.use(cookieParser());
+
 
 // --- Rate Limiting ---
 const authLimiter = rateLimit({

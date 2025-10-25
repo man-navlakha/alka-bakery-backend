@@ -51,20 +51,14 @@ export const registerUser = async (req, res) => {
       return res.status(500).json({ message: "Registration failed during token storage." });
     }
 
-    // --- Set the Cookie ---
-    res.cookie("refreshToken", refreshToken, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "lax", // Use 'lax' for better dev compatibility between ports
-      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
-    });
 
     // --- Send Response ---
     // Send response AFTER setting cookie
-    res.status(201).json({
-      message: "User registered successfully",
-      user: newUser, // Send the user object fetched after insert
-      accessToken, // Only send accessToken in body
+    res.json({
+      message: "Login successful",
+      user: { id: user.id, name: user.name, email: user.email, role: user.role },
+      accessToken,
+      refreshToken, // <-- ADD THIS LINE
     });
 
   } catch (error) {
@@ -78,6 +72,7 @@ export const registerUser = async (req, res) => {
  */
 export const loginUser = async (req, res) => {
   try {
+    console.log("Login attempt for:", req.body.email); // Log entry
     const { email, password } = req.body;
 
     const { data: user, error: fetchError } = await supabase
@@ -86,17 +81,27 @@ export const loginUser = async (req, res) => {
       .eq("email", email)
       .maybeSingle();
 
-    if (fetchError) throw fetchError;
-    if (!user) return res.status(401).json({ message: "Invalid credentials" });
-
+    if (fetchError) {
+      console.error("Supabase fetch error:", fetchError);
+      throw fetchError;
+    }
+    if (!user) {
+      console.warn("User not found:", email);
+      return res.status(401).json({ message: "Invalid credentials" });
+    }
 
     const isMatch = await bcrypt.compare(password, user.password);
-    if (!isMatch) return res.status(401).json({ message: "Invalid credentials" });
+    if (!isMatch) {
+      console.warn("Password mismatch for user:", email);
+      return res.status(401).json({ message: "Invalid credentials" });
+    }
 
+    console.log("Credentials valid for:", email); // Log success
 
     // Generate tokens
     const accessToken = generateAccessToken(user.id);
     const refreshToken = generateRefreshToken(user.id);
+    console.log("Generated Tokens. AccessToken:", accessToken.substring(0, 10) + "...", "RefreshToken:", refreshToken.substring(0, 10) + "..."); // Log token generation
 
     // Update refresh token in DB
     const { error: updateError } = await supabase
@@ -105,33 +110,26 @@ export const loginUser = async (req, res) => {
       .eq("id", user.id);
 
     if (updateError) {
-      console.error("Failed to update refresh token during login:", updateError);
+      console.error("Failed to update refresh token in DB:", updateError);
+      // Non-critical, but log it. Proceed with login.
+    } else {
+      console.log("Successfully updated refresh token in DB for user:", user.id);
     }
-
-    // --- Set the Cookie ---
-    const isProduction = process.env.NODE_ENV === "production";
-    res.cookie("refreshToken", refreshToken, {
-      httpOnly: true,                         // Keep: Inaccessible to JS
-      secure: isProduction,                   // IMPORTANT: Set to true only in production (HTTPS)
-      sameSite: isProduction ? "none" : "lax", // Use 'none' for cross-site requests in prod (requires secure: true), 'lax' is safer default locally
-      maxAge: 7 * 24 * 60 * 60 * 1000,        // 7 days
-      // domain: isProduction ? 'your-production-domain.com' : undefined // Add if needed for production subdomains
-      // path: '/' // Usually defaults fine, add if specific path needed
-    });
 
     // --- Send Response ---
     res.json({
       message: "Login successful",
       user: { id: user.id, name: user.name, email: user.email, role: user.role },
       accessToken,
+      refreshToken, // <-- ADD THIS LINE
     });
+    console.log("Response sent."); // Log after res.json
 
   } catch (error) {
-    console.error("Login Error:", error);
+    console.error("Login Error in catch block:", error); // Log any caught errors
     res.status(500).json({ message: "An unexpected error occurred during login." });
   }
 };
-
 
 /**
  * 🔒 Logout User
@@ -206,55 +204,36 @@ export const getProfile = async (req, res) => {
  * 🔄 Refresh Access Token
  */
 export const refreshAccessToken = async (req, res) => {
-  // Read token from cookies
-  const refreshToken = req.cookies.refreshToken;
+  // Read token from request BODY instead of cookies
+  const { refreshToken } = req.body; // <-- CHANGE THIS
 
   if (!refreshToken) {
-    // Use 401 Unauthorized, as this implies missing credentials
-    return res.status(401).json({ message: "Refresh Token missing" });
+    return res.status(401).json({ message: "Refresh Token missing in request body" }); // Update message
   }
 
   try {
-    // Verify refresh token signature and expiry
     const payload = jwt.verify(refreshToken, process.env.REFRESH_TOKEN_SECRET);
 
-    // Check if token exists and matches in the DB (prevents reuse after logout/theft)
     const { data: user, error: dbError } = await supabase
       .from("users")
       .select("id, refresh_token")
       .eq("id", payload.id)
-      .maybeSingle(); // Use maybeSingle
+      .maybeSingle();
 
-    if (dbError) throw dbError; // Handle potential DB errors
+    if (dbError) throw dbError;
 
-    // If user not found OR the stored token doesn't match the one provided
+    // Still compare against DB token for security
     if (!user || user.refresh_token !== refreshToken) {
-      // Clear potentially compromised cookie if it exists but doesn't match DB
-      if (user && user.refresh_token !== refreshToken) {
-        res.clearCookie("refreshToken", {
-          httpOnly: true,
-          secure: process.env.NODE_ENV === "production",
-          sameSite: "lax",
-        });
-      }
-      // Use 403 Forbidden as the token was present but invalid/revoked
+      // No need to clear cookie here
       return res.status(403).json({ message: "Invalid or revoked Refresh Token" });
     }
 
-    // If token is valid and matches DB, generate a new access token
     const newAccessToken = generateAccessToken(user.id);
     res.json({ accessToken: newAccessToken });
 
   } catch (err) {
-    // Handle JWT errors (expired, malformed, etc.)
     console.warn("Refresh token verification failed:", err.message);
-    // Clear the invalid/expired cookie
-    res.clearCookie("refreshToken", {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "lax",
-    });
-    // Use 403 Forbidden for invalid/expired tokens
+    // No cookie to clear
     res.status(403).json({ message: "Invalid or expired Refresh Token" });
   }
 };
