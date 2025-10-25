@@ -1,43 +1,24 @@
-import express from 'express';
-import multer from 'multer';
-import cloudinary from '../config/cloudinary.js';
-import { supabase } from '../config/supabase.js';
-import { protect } from '../middleware/authMiddleware.js';
-import fs from 'fs';
+import express from "express";
+import { addProduct, getProducts, getProductById, updateProduct, deleteProduct } from "../controllers/productController.js";
+import { protect } from "../middleware/authMiddleware.js";
+import fileUpload from "express-fileupload";
+import { adminCheck } from "../middleware/adminMiddleware.js";
 
 const router = express.Router();
-const upload = multer({ dest: '/tmp/uploads' });
 
-// Add product (protected)
-router.post('/add', protect, upload.single('image'), async (req, res) => {
-  try {
-    if (!req.file) return res.status(400).json({ message: 'Image file required' });
-    const result = await cloudinary.uploader.upload(req.file.path, { folder: 'alka-bakery' });
-    // remove temp file
-    try { fs.unlinkSync(req.file.path); } catch(e){ /* ignore */ }
+// Middleware to handle file uploads
+router.use(fileUpload({ useTempFiles: true }));
 
-    const { name, price, category, description } = req.body;
-    const { data, error } = await supabase
-      .from('products')
-      .insert([{ name, price: Number(price), category, description, image: result.secure_url }])
-      .select('*')
-      .single();
-    if (error) throw error;
-    res.json({ message: 'Product added', product: data });
-  } catch (err) {
-    res.status(500).json({ message: err.message || 'Add product failed' });
-  }
-});
+// Routes
+router.post("/", protect, adminCheck, addProduct);       // Add product (protected)
+router.get("/", getProducts);               // Get all products
+router.get("/:id", getProductById);         // Get single product
 
-// Public: list products
-router.get('/', async (req, res) => {
-  try {
-    const { data, error } = await supabase.from('products').select('*').order('created_at', { ascending: false });
-    if (error) throw error;
-    res.json({ products: data });
-  } catch (err) {
-    res.status(500).json({ message: err.message || 'Fetch failed' });
-  }
-});
+// Update product (admin only)
+router.put("/:id", protect, adminCheck, updateProduct);
+
+// Delete product (admin only)
+router.delete("/:id", protect, adminCheck, deleteProduct);
+
 
 export default router;
