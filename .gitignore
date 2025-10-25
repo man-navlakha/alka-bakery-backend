@@ -1,0 +1,67 @@
+# -----------------------------
+# Node.js
+# -----------------------------
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# -----------------------------
+# Environment & Secrets
+# -----------------------------
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# -----------------------------
+# Build outputs
+# -----------------------------
+dist/
+build/
+.next/
+out/
+.vercel/
+.cache/
+coverage/
+
+# -----------------------------
+# Logs & Temp files
+# -----------------------------
+*.log
+logs/
+tmp/
+temp/
+uploads/
+.DS_Store
+
+# -----------------------------
+# IDE & OS
+# -----------------------------
+.vscode/
+.idea/
+*.swp
+*.swo
+*.bak
+Thumbs.db
+
+# -----------------------------
+# Local testing artifacts
+# -----------------------------
+/test-results/
+*.sqlite
+*.db
+
+# -----------------------------
+# Custom project folders
+# -----------------------------
+# Ignore uploaded bakery images (Cloudinary stores them)
+public/uploads/
+src/sql/*.sql
+
+# -----------------------------
+# Zip or build archives
+# -----------------------------
+*.zip
