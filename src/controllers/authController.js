@@ -46,9 +46,9 @@ export const registerUser = async (req, res) => {
 
     // If storing the refresh token fails, we might want to rollback or log
     if (updateError) {
-        console.error("Failed to store refresh token during registration:", updateError);
-        // Decide how to handle: maybe delete the user or just return an error
-        return res.status(500).json({ message: "Registration failed during token storage." });
+      console.error("Failed to store refresh token during registration:", updateError);
+      // Decide how to handle: maybe delete the user or just return an error
+      return res.status(500).json({ message: "Registration failed during token storage." });
     }
 
     // --- Set the Cookie ---
@@ -78,16 +78,14 @@ export const registerUser = async (req, res) => {
  */
 export const loginUser = async (req, res) => {
   try {
-    // ... (validation handled by express-validator)
     const { email, password } = req.body;
 
     const { data: user, error: fetchError } = await supabase
       .from("users")
-      .select("id, name, email, password, refresh_token, role") // Include role if needed by frontend
+      .select("id, name, email, password, refresh_token, role")
       .eq("email", email)
-      .maybeSingle(); // Use maybeSingle
+      .maybeSingle();
 
-    // Differentiate between DB error and user not found
     if (fetchError) throw fetchError;
     if (!user) return res.status(401).json({ message: "Invalid credentials" });
 
@@ -100,31 +98,30 @@ export const loginUser = async (req, res) => {
     const accessToken = generateAccessToken(user.id);
     const refreshToken = generateRefreshToken(user.id);
 
-    // Update refresh token in DB only if it's different (optional optimization)
-    // or always update to ensure it's fresh
+    // Update refresh token in DB
     const { error: updateError } = await supabase
       .from("users")
       .update({ refresh_token: refreshToken })
       .eq("id", user.id);
 
     if (updateError) {
-        console.error("Failed to update refresh token during login:", updateError);
-        // Non-critical, but log it. Proceed with login.
+      console.error("Failed to update refresh token during login:", updateError);
     }
 
     // --- Set the Cookie ---
+    const isProduction = process.env.NODE_ENV === "production";
     res.cookie("refreshToken", refreshToken, {
-    httpOnly: true,                         // Makes it inaccessible to JS
-    secure: process.env.NODE_ENV === "production", // SHOULD BE FALSE in local HTTP dev
-    sameSite: "lax",                        // Allows sending from different ports on localhost
-    maxAge: 7 * 24 * 60 * 60 * 1000,        // 7 days in milliseconds
-    // path: '/' // Optionally add path: '/' if needed later
-});
+      httpOnly: true,                         // Keep: Inaccessible to JS
+      secure: isProduction,                   // IMPORTANT: Set to true only in production (HTTPS)
+      sameSite: isProduction ? "none" : "lax", // Use 'none' for cross-site requests in prod (requires secure: true), 'lax' is safer default locally
+      maxAge: 7 * 24 * 60 * 60 * 1000,        // 7 days
+      // domain: isProduction ? 'your-production-domain.com' : undefined // Add if needed for production subdomains
+      // path: '/' // Usually defaults fine, add if specific path needed
+    });
 
     // --- Send Response ---
     res.json({
       message: "Login successful",
-      // Exclude password and refresh_token from response
       user: { id: user.id, name: user.name, email: user.email, role: user.role },
       accessToken,
     });
@@ -143,13 +140,13 @@ export const logoutUser = async (req, res) => {
   const refreshToken = req.cookies.refreshToken;
 
   // Define cookie options for clearing (must match setting options like path, domain if used)
-   const cookieOptions = {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "lax", // Match the setting options
-      // Add path: '/' if you set it during login/register
-      // Add domain: 'yourdomain.com' if applicable
-   };
+  const cookieOptions = {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax", // Match the setting options
+    // Add path: '/' if you set it during login/register
+    // Add domain: 'yourdomain.com' if applicable
+  };
 
   if (!refreshToken) {
     // No token, maybe already logged out or cookie expired. Still clear just in case.
@@ -232,15 +229,15 @@ export const refreshAccessToken = async (req, res) => {
 
     // If user not found OR the stored token doesn't match the one provided
     if (!user || user.refresh_token !== refreshToken) {
-       // Clear potentially compromised cookie if it exists but doesn't match DB
-       if (user && user.refresh_token !== refreshToken) {
-          res.clearCookie("refreshToken", {
-              httpOnly: true,
-              secure: process.env.NODE_ENV === "production",
-              sameSite: "lax",
-          });
-       }
-       // Use 403 Forbidden as the token was present but invalid/revoked
+      // Clear potentially compromised cookie if it exists but doesn't match DB
+      if (user && user.refresh_token !== refreshToken) {
+        res.clearCookie("refreshToken", {
+          httpOnly: true,
+          secure: process.env.NODE_ENV === "production",
+          sameSite: "lax",
+        });
+      }
+      // Use 403 Forbidden as the token was present but invalid/revoked
       return res.status(403).json({ message: "Invalid or revoked Refresh Token" });
     }
 
@@ -251,12 +248,12 @@ export const refreshAccessToken = async (req, res) => {
   } catch (err) {
     // Handle JWT errors (expired, malformed, etc.)
     console.warn("Refresh token verification failed:", err.message);
-     // Clear the invalid/expired cookie
-     res.clearCookie("refreshToken", {
-         httpOnly: true,
-         secure: process.env.NODE_ENV === "production",
-         sameSite: "lax",
-     });
+    // Clear the invalid/expired cookie
+    res.clearCookie("refreshToken", {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax",
+    });
     // Use 403 Forbidden for invalid/expired tokens
     res.status(403).json({ message: "Invalid or expired Refresh Token" });
   }
