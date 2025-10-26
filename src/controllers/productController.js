@@ -4,7 +4,7 @@ import cloudinary from "../config/cloudinary.js";
 // 🥐 Add Product
 export const addProduct = async (req, res) => {
   try {
-    const { name, price, category, description } = req.body;
+   const { name, price, category_id, unit_id, description } = req.body;
     if (!name || !price) return res.status(400).json({ message: "Name and price required" });
 
     let imageUrl = null;
@@ -17,11 +17,10 @@ export const addProduct = async (req, res) => {
     }
 
     const { data, error } = await supabase
-      .from("products")
-      .insert([{ name, price, category, description, image: imageUrl }])
-      .select()
-      .single();
-
+  .from("products")
+  .insert([{ name, price, category_id, unit_id, description, image: imageUrl }]) // Use new fields
+  .select()
+  .single();
     if (error) throw error;
     res.status(201).json({ message: "Product added", product: data });
   } catch (error) {
@@ -79,7 +78,13 @@ export const getProducts = async (req, res) => {
   try {
     const { data, error } = await supabase
       .from("products")
-      .select("*")
+      // This tells Supabase to fetch all product fields (*)
+      // and for 'categories' and 'units', fetch their 'name'
+      .select(`
+        *,
+        categories ( name ),
+        units ( name )
+      `)
       .order("created_at", { ascending: false });
 
     if (error) throw error;
@@ -95,7 +100,11 @@ export const getProductById = async (req, res) => {
     const { id } = req.params;
     const { data, error } = await supabase
       .from("products")
-      .select("*")
+      .select(`
+        *,
+        categories ( name ),
+        units ( name )
+      `)
       .eq("id", id)
       .single();
 
