@@ -3,10 +3,9 @@ import dotenv from "dotenv";
 import cors from "cors";
 import authRoutes from "./routes/auth.js";
 import orderRoutes from "./routes/orderRoutes.js";
-import cartRoutes from "./routes/cartRoutes.js";
 import contactRoutes from "./routes/contactRoutes.js";
 import productRoutes from "./routes/products.js";
-
+import reviewRoutes from "./routes/reviewRoutes.js";
 import categoryRoutes from "./routes/categoryRoutes.js";
 import unitsRoutes from "./routes/unitsRoutes.js";
 import profileRoutes from "./routes/profileRoutes.js";
@@ -54,11 +53,11 @@ app.get("/", (req, res) => res.send("🍰 Welcome to Alka Bakery API!"));
 app.use("/api/auth", authRoutes);
 app.use("/api/products", productRoutes);
 app.use("/api/orders", orderRoutes);
-app.use("/api/cart", cartRoutes);
 app.use("/api/contact", contactRoutes);
 app.use("/api/profile", profileRoutes);
 app.use("/api/categories", categoryRoutes);
 app.use("/api/units", unitsRoutes);
+app.use("/api/reviews", reviewRoutes);
 
 
 // --- Global Error Handler (Optional but Recommended) ---
