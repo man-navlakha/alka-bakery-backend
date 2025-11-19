@@ -1,210 +1,250 @@
-import { supabase } from "../config/supabase.js";
-import cloudinary from "../config/cloudinary.js";
+// productController.js
+import asyncHandler from "express-async-handler";
+import { createClient } from "@supabase/supabase-js";
 
-// 🥐 Add Product
-export const addProduct = async (req, res) => {
+// Use a service role or admin key on the server for writes
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_KEY = process.env.SUPABASE_KEY || process.env.SUPABASE_ANON_KEY;
+
+if (!SUPABASE_URL || !SUPABASE_KEY) {
+  throw new Error("Missing SUPABASE_URL or SUPABASE_KEY in environment");
+}
+
+const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+
+/**
+ * GET /api/products
+ * returns products with product_unit_options and product_images
+ */
+export const getProducts = asyncHandler(async (req, res) => {
+  const { data, error } = await supabase
+    .from("products")
+    .select(
+      `
+      id,
+      name,
+      category,
+      unit,
+      price_per_100g,
+      price_per_pc,
+      description,
+      created_at,
+      product_unit_options ( id, label, grams, price, position ),
+      product_images ( id, url, alt, position )
+    `
+    )
+    .order("created_at", { ascending: false });
+
+  if (error) {
+    return res.status(500).json({ message: "Failed to fetch products", details: error.message });
+  }
+
+  return res.json(data);
+});
+
+/**
+ * GET /api/products/:id
+ * returns a single product (with options & images)
+ */
+export const getProductById = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  if (!id) return res.status(400).json({ message: "Product id is required" });
+
+  const { data, error } = await supabase
+    .from("products")
+    .select(
+      `
+      *,
+      product_unit_options ( id, label, grams, price, position ),
+      product_images ( id, url, alt, position )
+    `
+    )
+    .eq("id", id)
+    .maybeSingle();
+
+  if (error) return res.status(500).json({ message: "Failed to fetch product", details: error.message });
+  if (!data) return res.status(404).json({ message: "Product not found" });
+
+  return res.json(data);
+});
+
+/**
+ * POST /api/products
+ * body: {
+ *   id, name, category, unit,
+ *   price_per_100g?, price_per_pc?, description?,
+ *   unitOptions?: [{ label, grams, price, position? }],
+ *   images?: [{ url, alt, position? }]
+ * }
+ */
+export const createProduct = asyncHandler(async (req, res) => {
+  const payload = req.body || {};
+
+  // Basic validation
+  const required = ["id", "name", "category", "unit"];
+  for (const k of required) {
+    if (!payload[k]) return res.status(400).json({ message: `Missing field: ${k}` });
+  }
+
+  // Insert product
+  const { data: prodData, error: prodErr } = await supabase.from("products").insert([{
+    id: payload.id,
+    name: payload.name,
+    category: payload.category,
+    unit: payload.unit,
+    price_per_100g: payload.price_per_100g ?? null,
+    price_per_pc: payload.price_per_pc ?? null,
+    description: payload.description ?? null,
+  }]);
+
+  if (prodErr) {
+    return res.status(500).json({ message: "Failed to create product", details: prodErr.message });
+  }
+
+  const createdProduct = Array.isArray(prodData) ? prodData[0] : prodData;
+
   try {
-    const { 
-      name, description, price, category_id,
-      is_published, is_available, is_featured, 
-      sale_price, on_sale, preparation_time, shelf_life,
-      is_customizable, is_gift_wrappable, gift_wrap_price, 
-      personalization_message_limit, tags,
-      variants // Expect variants as an array in the body
-    } = req.body;
-            
-    if (!name || !price || !category_id) {
-      return res.status(400).json({ message: "Name, base price, and category ID are required" });
-    }
-    if (!variants || !Array.isArray(variants) || variants.length === 0) {
-      return res.status(400).json({ message: "At least one product variant is required" });
+    // insert unit options if provided
+    if (Array.isArray(payload.unitOptions) && payload.unitOptions.length) {
+      const options = payload.unitOptions.map((o) => ({
+        product_id: createdProduct.id,
+        label: o.label,
+        grams: o.grams ?? null,
+        price: o.price,
+        position: o.position ?? 0,
+      }));
+
+      const { error: optsErr } = await supabase.from("product_unit_options").insert(options);
+      if (optsErr) throw optsErr;
     }
 
-    // Handle Main Image (still recommended for category pages, etc.)
-    let mainImageUrl = null;
-    if (req.files && req.files.image) {
-      const file = req.files.image;
-      const uploadResult = await cloudinary.uploader.upload(file.tempFilePath, { folder: "alka-bakery" });
-      mainImageUrl = uploadResult.secure_url;
+    // insert images if provided
+    if (Array.isArray(payload.images) && payload.images.length) {
+      const imgs = payload.images.map((i) => ({
+        product_id: createdProduct.id,
+        url: i.url,
+        alt: i.alt ?? null,
+        position: i.position ?? 0,
+      }));
+
+      const { error: imgsErr } = await supabase.from("product_images").insert(imgs);
+      if (imgsErr) throw imgsErr;
     }
+  } catch (err) {
+    // attempt cleanup if follow-up inserts failed
+    await supabase.from("product_images").delete().eq("product_id", createdProduct.id);
+    await supabase.from("product_unit_options").delete().eq("product_id", createdProduct.id);
+    await supabase.from("products").delete().eq("id", createdProduct.id);
+    return res.status(500).json({ message: "Failed to create product related records", details: err.message });
+  }
 
-    // --- Insert the main product ---
-    const { data: newProduct, error: productError } = await supabase
-      .from("products")
-      .insert([{ 
-        name, description, price, category_id,
-        image: mainImageUrl, 
-        is_published, is_available, is_featured, 
-        sale_price, on_sale, preparation_time, shelf_life,
-        is_customizable, is_gift_wrappable, gift_wrap_price, 
-        personalization_message_limit, tags 
-      }])
-      .select('id') // Only select the ID we need
-      .single();
+  // return the created product with relations
+  const { data: full, error: fullErr } = await supabase
+    .from("products")
+    .select(
+      `
+      *,
+      product_unit_options ( id, label, grams, price, position ),
+      product_images ( id, url, alt, position )
+    `
+    )
+    .eq("id", createdProduct.id)
+    .maybeSingle();
 
-    if (productError) throw productError;
-    const newProductId = newProduct.id;
+  if (fullErr) return res.status(201).json({ created: createdProduct, note: "created but failed to fetch relations", details: fullErr.message });
 
-    // --- Prepare and Insert Variants ---
-    const variantObjects = variants.map(variant => ({
-      product_id: newProductId,
-      name: variant.name,
-      price_modifier: variant.price_modifier || 0,
-      sku: variant.sku,
-      is_available: variant.is_available,
-      min_quantity: variant.min_quantity,
-      max_quantity: variant.max_quantity,
-      quantity_step: variant.quantity_step,
-      unit_id: variant.unit_id // Add unit_id to variant
-    }));
+  return res.status(201).json(full);
+});
 
-    const { error: variantsError } = await supabase
-      .from("product_variants")
-      .insert(variantObjects);
+/**
+ * PUT /api/products/:id
+ * (full replace) - Accepts same payload as createProduct but fields optional.
+ * For simplicity this implementation:
+ *  - updates the products row
+ *  - replaces unit options if provided (delete existing -> insert new)
+ *  - replaces images if provided
+ */
+export const updateProduct = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const payload = req.body || {};
+  if (!id) return res.status(400).json({ message: "Product id is required" });
 
-    if (variantsError) {
-      // If variants fail, maybe delete the product? Or handle differently.
-      console.error("Error inserting variants:", variantsError);
-      // Rollback: Delete the product if variants failed
-      await supabase.from('products').delete().eq('id', newProductId); 
-      throw new Error("Failed to save product variants.");
-    }
+  // Update base product fields (only provided ones)
+  const updateFields = {};
+  ["name", "category", "unit", "price_per_100g", "price_per_pc", "description"].forEach((k) => {
+    if (Object.prototype.hasOwnProperty.call(payload, k)) updateFields[k] = payload[k];
+  });
 
-    // --- Handle Gallery Images (Optional - remains the same) ---
-    if (req.files && req.files.images) {
-      const galleryFiles = Array.isArray(req.files.images) ? req.files.images : [req.files.images];
-      const galleryImageObjects = [];
-      for (const file of galleryFiles) {
-        const uploadResult = await cloudinary.uploader.upload(file.tempFilePath, { folder: "alka-bakery-gallery" });
-        galleryImageObjects.push({ product_id: newProductId, image_url: uploadResult.secure_url });
+  if (Object.keys(updateFields).length) {
+    const { error: updErr } = await supabase.from("products").update(updateFields).eq("id", id);
+    if (updErr) return res.status(500).json({ message: "Failed to update product", details: updErr.message });
+  }
+
+  try {
+    // Replace unit options if provided (delete old -> insert new)
+    if (Array.isArray(payload.unitOptions)) {
+      await supabase.from("product_unit_options").delete().eq("product_id", id);
+
+      if (payload.unitOptions.length) {
+        const options = payload.unitOptions.map((o) => ({
+          product_id: id,
+          label: o.label,
+          grams: o.grams ?? null,
+          price: o.price,
+          position: o.position ?? 0,
+        }));
+        const { error: optsErr } = await supabase.from("product_unit_options").insert(options);
+        if (optsErr) throw optsErr;
       }
-      if (galleryImageObjects.length > 0) {
-        const { error: imagesError } = await supabase.from("product_images").insert(galleryImageObjects);
-        if (imagesError) console.error("Error saving gallery images:", imagesError); // Log error but don't fail the request
+    }
+
+    // Replace images if provided
+    if (Array.isArray(payload.images)) {
+      await supabase.from("product_images").delete().eq("product_id", id);
+
+      if (payload.images.length) {
+        const imgs = payload.images.map((i) => ({
+          product_id: id,
+          url: i.url,
+          alt: i.alt ?? null,
+          position: i.position ?? 0,
+        }));
+        const { error: imgsErr } = await supabase.from("product_images").insert(imgs);
+        if (imgsErr) throw imgsErr;
       }
     }
-
-    // Fetch the newly created product with its variants to return
-    const { data: finalProduct, error: fetchError } = await supabase
-        .from('products')
-        .select(`*, product_variants(*)`)
-        .eq('id', newProductId)
-        .single();
-    
-    if(fetchError) throw fetchError;
-
-    res.status(201).json({ message: "Product added", product: finalProduct });
-
-  } catch (error) {
-    console.error("Add Product Error:", error);
-    res.status(500).json({ message: error.message });
+  } catch (err) {
+    return res.status(500).json({ message: "Failed to update product related records", details: err.message });
   }
-};export const updateProduct = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { 
-      name, description, price, category_id,
-      is_published, is_available, is_featured, 
-      sale_price, on_sale, preparation_time, shelf_life,
-      is_customizable, is_gift_wrappable, gift_wrap_price, 
-      personalization_message_limit, tags 
-    } = req.body;
 
-    let updateData = { 
-      name, description, price, category_id,
-      is_published, is_available, is_featured, 
-      sale_price, on_sale, preparation_time, shelf_life,
-      is_customizable, is_gift_wrappable, gift_wrap_price, 
-      personalization_message_limit, tags 
-    };
+  // return updated product
+  const { data, error } = await supabase
+    .from("products")
+    .select(
+      `
+      *,
+      product_unit_options ( id, label, grams, price, position ),
+      product_images ( id, url, alt, position )
+    `
+    )
+    .eq("id", id)
+    .maybeSingle();
 
-    // Handle updating the main image
-    if (req.files && req.files.image) {
-      const file = req.files.image;
-      const uploadResult = await cloudinary.uploader.upload(file.tempFilePath, { folder: "alka-bakery" });
-      updateData.image = uploadResult.secure_url;
-    }
+  if (error) return res.status(500).json({ message: "Updated but failed to fetch product", details: error.message });
 
-    const { data, error } = await supabase
-      .from("products")
-      .update(updateData)
-      .eq("id", id)
-      .select()
-      .single();
+  return res.json(data);
+});
 
-    if (error) throw error;
-    res.json({ message: "Product core details updated", product: data });
-  } catch (error) {
-     console.error("Update Product Error:", error);
-    res.status(500).json({ message: error.message });
-  }
-};
+/**
+ * DELETE /api/products/:id
+ */
+export const deleteProduct = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  if (!id) return res.status(400).json({ message: "Product id is required" });
 
-// Delete Product (Admin)
-export const deleteProduct = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { error } = await supabase.from("products").delete().eq("id", id);
-    if (error) throw error;
-    res.json({ message: "Product deleted successfully" });
-  } catch (error) {
-    res.status(500).json({ message: error.message });
-  }
-};
+  // deleting product will cascade to options & images (if FK ON DELETE CASCADE set)
+  const { error } = await supabase.from("products").delete().eq("id", id);
+  if (error) return res.status(500).json({ message: "Failed to delete product", details: error.message });
 
-
-// 🍰 Get All Products
-export const getProducts = async (req, res) => {
-  try {
-    const { data, error } = await supabase
-      .from("products")
-      .select(`
-        *,
-        categories ( name ),
-        product_variants ( * ), 
-        product_images ( id, image_url ),
-        product_reviews ( count ) 
-      `)
-      // .eq('product_reviews.is_approved', true) // Filter reviews - better done separately
-      .eq('is_published', true) // Only get published products
-      .order("created_at", { ascending: false });
-
-    if (error) throw error;
-
-    // TODO: Calculate average rating if needed (requires fetching reviews separately or a DB function)
-    
-    res.json(data);
-  } catch (error) {
-    res.status(500).json({ message: error.message });
-  }
-};
-
-// 🎂 Get Single Product
-export const getProductById = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { data, error } = await supabase
-      .from("products")
-      .select(`
-        *,
-        categories ( name ),
-        product_variants ( *, units ( name ) ),  -- Fetch unit name for variants
-        product_images ( id, image_url ),
-        product_reviews ( * ) 
-      `)
-      .eq("id", id)
-      // .eq('product_reviews.is_approved', true) // Filter reviews
-      .single();
-
-    if (error) {
-        console.error("Get Product By ID Error:", error);
-        return res.status(404).json({ message: "Product not found" });
-    }
-
-    // TODO: Calculate average rating here
-    
-    res.json(data);
-  } catch (error) {
-    res.status(500).json({ message: error.message });
-  }
-};
+  return res.json({ message: "Product deleted" });
+});

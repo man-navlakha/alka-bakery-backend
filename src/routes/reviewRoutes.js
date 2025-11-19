@@ -1,25 +1,14 @@
+// reviewRoutes.js
 import express from "express";
-import { 
-    addReview, 
-    getApprovedReviews,
-    getAllReviewsAdmin,
-    approveReviewAdmin,
-    deleteReviewAdmin
-} from "../controllers/reviewController.js";
-import { protect } from "../middleware/authMiddleware.js";
-import { adminCheck } from "../middleware/adminMiddleware.js";
+import { listReviews, reviewsSummary, createReview, /* other handlers */ } from "../controllers/reviewController.js";
 
 const router = express.Router();
 
-// Public route to get reviews for a specific product
-router.get("/:productId", getApprovedReviews);
+router.get("/products/:productId/reviews", listReviews);
+router.get("/products/:productId/reviews/summary", reviewsSummary);
+router.post("/products/:productId/reviews", createReview); // your createReview from earlier
 
-// Protected route for users to add a review
-router.post("/:productId", protect, addReview);
-
-// --- Admin Routes ---
-router.get("/admin/all", protect, adminCheck, getAllReviewsAdmin);
-router.put("/admin/approve/:reviewId", protect, adminCheck, approveReviewAdmin);
-router.delete("/admin/:reviewId", protect, adminCheck, deleteReviewAdmin);
+// helpful, replies etc...
+// router.post("/reviews/:id/helpful", markHelpful);
 
 export default router;
