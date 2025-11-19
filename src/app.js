@@ -9,6 +9,7 @@ import reviewRoutes from "./routes/reviewRoutes.js";
 import categoryRoutes from "./routes/categoryRoutes.js";
 import unitsRoutes from "./routes/unitsRoutes.js";
 import profileRoutes from "./routes/profileRoutes.js";
+import cartRoutes from "./routes/cartRoutes.js";
 import cookieParser from "cookie-parser"; // Ensure this is imported
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
@@ -55,6 +56,7 @@ app.use("/api/products", productRoutes);
 app.use("/api/orders", orderRoutes);
 app.use("/api/contact", contactRoutes);
 app.use("/api/profile", profileRoutes);
+app.use("/api/cart", cartRoutes);
 app.use("/api/categories", categoryRoutes);
 app.use("/api/units", unitsRoutes);
 app.use("/api/reviews", reviewRoutes);
