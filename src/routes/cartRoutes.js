@@ -1,0 +1,33 @@
+// src/routes/cartRoutes.js
+import express from "express";
+import asyncHandler from "express-async-handler";
+import {
+  getCart,
+  addItem,
+  updateItem,
+  removeItem,
+  applyCoupon,
+  removeCoupon,
+} from "../controllers/cartController.js";
+
+const router = express.Router();
+
+// GET /api/cart
+router.get("/", asyncHandler(getCart));
+
+// POST /api/cart/items
+router.post("/items", asyncHandler(addItem));
+
+// PATCH /api/cart/items/:itemId
+router.patch("/items/:itemId", asyncHandler(updateItem));
+
+// DELETE /api/cart/items/:itemId
+router.delete("/items/:itemId", asyncHandler(removeItem));
+
+// POST /api/cart/apply-coupon
+router.post("/apply-coupon", asyncHandler(applyCoupon));
+
+// DELETE /api/cart/coupon
+router.delete("/coupon", asyncHandler(removeCoupon));
+
+export default router;
