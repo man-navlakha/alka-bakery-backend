@@ -1,56 +1,114 @@
-// src/controllers/cartController.js
-import { supabase } from "../config/supabase.js"; // adjust path if different
+import { supabase } from "../config/supabase.js";
 import { randomUUID } from "node:crypto";
 
 /**
- * Helpers
+ * ==============================
+ * HELPER FUNCTIONS
+ * ==============================
  */
 
+/**
+ * Extracts the Cart ID from Headers or Cookies
+ */
 function getCartIdFromRequest(req) {
   const headerId = req.headers["x-cart-id"];
   const cookieId = req.cookies?.cart_id;
-  return headerId || cookieId || null;
+  const id = headerId || cookieId || null;
+  return id;
 }
 
-// If you have auth, extract user id from req.user or JWT
+/**
+ * Extracts User ID from the Request (populated by authMiddleware)
+ */
 function getUserIdFromRequest(req) {
-  // Example: if you use some auth middleware that sets req.user
-  return req.user?.id || null;
-}
+  // Handle both: req.user as Object (new middleware) OR req.user as String (old middleware)
+  const user = req.user;
+  const userId = user?.id || user || null; 
 
-async function findOrCreateCart({ cartId, userId }) {
-  if (cartId) {
-    const { data, error } = await supabase
-      .from("carts")
-      .select("*")
-      .eq("id", cartId)
-      .eq("status", "active")
-      .single();
+  // Simple check: if it's still an object (unlikely with ?.id), force null to prevent DB error
+  if (typeof userId === 'object') return null; 
 
-    if (!error && data) return data;
+  if (userId) {
+    console.log(`👤 [Cart] User Active: ${userId}`);
+  } else {
+    console.log("👻 [Cart] Guest Mode");
   }
+  return userId;
+}
+/**
+ * Core Logic: Finds the correct cart for the context, handling merging if needed.
+ */
+async function findOrCreateCart({ cartId, userId }) {
+  let userCart = null;
+  let guestCart = null;
 
-  // If userId exists, try to reuse existing active cart for this user
-  if (userId && !cartId) {
-    const { data, error } = await supabase
+  // 1. If User is logged in, try to find their existing active cart
+  if (userId) {
+    const { data } = await supabase
       .from("carts")
       .select("*")
       .eq("user_id", userId)
       .eq("status", "active")
-      .order("created_at", { ascending: false })
+      .order("updated_at", { ascending: false })
       .limit(1)
       .maybeSingle();
-
-    if (!error && data) return data;
+    userCart = data;
   }
 
-  // Create new cart
+  // 2. If a Cart ID is provided (from cookie/storage), try to find that guest cart
+  if (cartId) {
+    const { data } = await supabase
+      .from("carts")
+      .select("*")
+      .eq("id", cartId)
+      .eq("status", "active")
+      .maybeSingle();
+    guestCart = data;
+  }
+
+  // 3. MERGE LOGIC: If we have both a specific Guest Cart AND a User ID
+  if (userId && guestCart) {
+    // Scenario A: Guest Cart belongs to THIS user already
+    if (guestCart.user_id === userId) {
+      return guestCart;
+    }
+
+    // Scenario B: Guest Cart is truly anonymous (no owner yet)
+    if (!guestCart.user_id) {
+      if (userCart) {
+        // B.1: User ALREADY has an account cart. MERGE Guest Items -> User Cart
+        console.log(`🔀 Merging Guest Cart ${guestCart.id} items into User Cart ${userCart.id}`);
+        await mergeCartItems(guestCart.id, userCart.id);
+        
+        // Mark guest cart as 'merged' so it's effectively deleted/archived
+        await supabase.from("carts").update({ status: "merged" }).eq("id", guestCart.id);
+        
+        return userCart; // Use the account cart going forward
+      } else {
+        // B.2: User has NO account cart. Just CLAIM the guest cart.
+        console.log(`👤 Assigning Guest Cart ${guestCart.id} to User ${userId}`);
+        await supabase.from("carts").update({ user_id: userId }).eq("id", guestCart.id);
+        guestCart.user_id = userId;
+        return guestCart;
+      }
+    }
+  }
+
+  // 4. Return existing User Cart (Cross-device sync)
+  if (userCart) return userCart;
+
+  // 5. Return existing Guest Cart (Guest browsing)
+  if (guestCart) return guestCart;
+
+  // 6. No cart found anywhere? Create a NEW one.
   const newId = randomUUID();
-  const { data: created, error: createErr } = await supabase
+  console.log(`✨ Creating New Cart: ${newId} (User: ${userId || 'Guest'})`);
+  
+  const { data: created, error } = await supabase
     .from("carts")
     .insert({
       id: newId,
-      user_id: userId,
+      user_id: userId || null, // Link immediately if user is logged in
       status: "active",
       currency: "INR",
       subtotal: 0,
@@ -60,32 +118,65 @@ async function findOrCreateCart({ cartId, userId }) {
     .select("*")
     .single();
 
-  if (createErr) throw createErr;
+  if (error) throw error;
   return created;
+}
+
+/**
+ * Moves items from Source Cart to Target Cart, handling duplicates by summing quantities.
+ */
+async function mergeCartItems(sourceCartId, targetCartId) {
+  // Get all items from the guest cart
+  const { data: sourceItems } = await supabase
+    .from("cart_items")
+    .select("*")
+    .eq("cart_id", sourceCartId);
+
+  if (!sourceItems || sourceItems.length === 0) return;
+
+  for (const item of sourceItems) {
+    // Check if this product already exists in the target (user) cart
+    const { data: existing } = await supabase
+      .from("cart_items")
+      .select("id, quantity, unit_price")
+      .eq("cart_id", targetCartId)
+      .eq("product_id", item.product_id)
+      .eq("unit", item.unit)
+      .eq("variant_label", item.variant_label || null) // Ensure strict variant matching
+      .maybeSingle();
+
+    if (existing) {
+      // Item exists: Add quantities together
+      const newQty = existing.quantity + item.quantity;
+      const newTotal = existing.unit_price * newQty;
+      
+      await supabase
+        .from("cart_items")
+        .update({ quantity: newQty, line_total: newTotal })
+        .eq("id", existing.id);
+        
+      // Delete the original item from guest cart
+      await supabase.from("cart_items").delete().eq("id", item.id);
+    } else {
+      // Item does not exist: Move it to the target cart
+      await supabase
+        .from("cart_items")
+        .update({ cart_id: targetCartId })
+        .eq("id", item.id);
+    }
+  }
 }
 
 async function loadCartWithItems(cartId) {
   const { data: cart, error } = await supabase
     .from("carts")
-    .select(
-      `
+    .select(`
       *,
       cart_items:cart_items (
-        id,
-        product_id,
-        unit,
-        quantity,
-        grams,
-        variant_label,
-        variant_grams,
-        variant_price,
-        unit_price,
-        line_total,
-        is_gift,
-        meta
+        id, product_id, unit, quantity, grams, variant_label, 
+        variant_grams, variant_price, unit_price, line_total, is_gift, meta
       )
-    `
-    )
+    `)
     .eq("id", cartId)
     .single();
 
@@ -93,132 +184,90 @@ async function loadCartWithItems(cartId) {
   return cart;
 }
 
+/**
+ * Recalculate Subtotal, Auto-Discounts, Free Gifts, and Grand Total
+ */
 async function recalcTotals(cartId) {
-  // 1) Load cart + items
   const cart = await loadCartWithItems(cartId);
   const items = cart.cart_items || [];
 
-  // 2) Subtotal = sum of non-gift lines
+  // 1. Calculate Subtotal
   const subtotal = items
     .filter((it) => !it.is_gift)
     .reduce((sum, it) => sum + Number(it.line_total || 0), 0);
 
-  // 3) Existing manual coupon discount (user-entered code)
   const coupon_discount = Number(cart.coupon_discount || 0);
-
-  // 4) AUTO DISCOUNT (based on subtotal)
   let auto_discount = 0;
   let auto_coupon_code = null;
   let freeGiftApplied = false;
 
+  // 2. Check Auto-Coupons / Free Gifts
   if (subtotal > 0) {
-    // find all eligible auto coupons
-    const { data: autoCoupons, error: autoErr } = await supabase
+    const { data: autoCoupons } = await supabase
       .from("coupons")
       .select("*")
       .eq("is_auto", true)
       .eq("is_active", true)
       .lte("auto_threshold", subtotal);
 
-    if (autoErr) {
-      console.error("auto coupon lookup error:", autoErr);
-    } else if (autoCoupons && autoCoupons.length > 0) {
-      // pick coupon that gives max discount
-      let chosenAuto = null;
+    if (autoCoupons && autoCoupons.length > 0) {
+      // Pick best discount
+      let bestCoupon = null;
       let maxDiscount = 0;
 
       for (const c of autoCoupons) {
         let d = 0;
-        if (c.type === "percent") {
-          d = (subtotal * Number(c.value)) / 100;
-        } else if (c.type === "fixed") {
-          d = Number(c.value || 0);
-        }
-        if (d > maxDiscount) {
+        if (c.type === "percent") d = (subtotal * Number(c.value)) / 100;
+        else if (c.type === "fixed") d = Number(c.value || 0);
+        
+        if (d >= maxDiscount) {
           maxDiscount = d;
-          chosenAuto = c;
+          bestCoupon = c;
         }
       }
 
-      if (chosenAuto && maxDiscount > 0) {
+      if (bestCoupon) {
         auto_discount = maxDiscount;
-        auto_coupon_code = chosenAuto.code;
+        auto_coupon_code = bestCoupon.code;
 
-        // 5) FREE GIFT based on this auto coupon
-        if (chosenAuto.free_gift_product_id) {
-          const giftProductId = chosenAuto.free_gift_product_id;
-          const giftQty = chosenAuto.free_gift_qty || 1;
+        // Apply Free Gift if configured
+        if (bestCoupon.free_gift_product_id) {
+          const giftId = bestCoupon.free_gift_product_id;
+          const giftQty = bestCoupon.free_gift_qty || 1;
 
-          // does a gift line already exist?
-          const { data: giftItems } = await supabase
-            .from("cart_items")
-            .select("*")
-            .eq("cart_id", cartId)
-            .eq("product_id", giftProductId)
-            .eq("is_gift", true);
-
-          if (!giftItems || giftItems.length === 0) {
-            // create new gift item (free)
-            const { error: giftInsertErr } = await supabase
-              .from("cart_items")
-              .insert({
-                cart_id: cartId,
-                product_id: giftProductId,
-                unit: "pc", // you can change if your gift is gm/variant
-                quantity: giftQty,
-                unit_price: 0,
-                line_total: 0,
-                is_gift: true,
-              });
-
-            if (giftInsertErr) {
-              console.error("gift insert error:", giftInsertErr);
-            } else {
-              freeGiftApplied = true;
-            }
-          } else {
-            // ensure quantity and price are correct
-            const gift = giftItems[0];
-            const { error: giftUpdateErr } = await supabase
-              .from("cart_items")
-              .update({
-                quantity: giftQty,
-                unit_price: 0,
-                line_total: 0,
-              })
-              .eq("id", gift.id);
-
-            if (giftUpdateErr) {
-              console.error("gift update error:", giftUpdateErr);
-            } else {
-              freeGiftApplied = true;
-            }
+          // Check if gift exists
+          const existingGift = items.find(i => i.product_id === giftId && i.is_gift);
+          
+          if (!existingGift) {
+            await supabase.from("cart_items").insert({
+              cart_id: cartId,
+              product_id: giftId,
+              unit: "pc",
+              quantity: giftQty,
+              unit_price: 0,
+              line_total: 0,
+              is_gift: true
+            });
+          } else if (existingGift.quantity !== giftQty) {
+             await supabase.from("cart_items").update({ quantity: giftQty }).eq("id", existingGift.id);
           }
+          freeGiftApplied = true;
         }
       }
     }
   }
 
-  // 6) If no auto coupon qualifies -> remove any existing gift items
+  // 3. Cleanup invalid gifts
   if (!auto_coupon_code) {
-    const { error: giftDeleteErr } = await supabase
-      .from("cart_items")
-      .delete()
-      .eq("cart_id", cartId)
-      .eq("is_gift", true);
-
-    if (giftDeleteErr) {
-      console.error("gift delete error:", giftDeleteErr);
-    }
+    await supabase.from("cart_items").delete().eq("cart_id", cartId).eq("is_gift", true);
     freeGiftApplied = false;
   }
 
-  // 7) Aggregate totals
+  // 4. Update Cart Totals
   const discount_total = coupon_discount + auto_discount;
   const grand_total = Math.max(0, subtotal - discount_total);
 
-  // 8) Save totals + flags on carts table
-  const { data: updated, error } = await supabase
+  const { error } = await supabase
     .from("carts")
     .update({
       subtotal,
@@ -230,350 +279,255 @@ async function recalcTotals(cartId) {
       free_gift_applied: freeGiftApplied,
       updated_at: new Date().toISOString(),
     })
-    .eq("id", cartId)
-    .select("*")
-    .single();
+    .eq("id", cartId);
 
   if (error) throw error;
 
-  // 9) Reload complete cart with items and return
-  const full = await loadCartWithItems(cartId);
-  return full;
+  return await loadCartWithItems(cartId);
 }
 
+// cartController.js
 
-/**
- * Convert internal cart row to API response structure
- * (you can adjust to match your frontend exactly)
- */
 function mapCartResponse(cart) {
-  const items = (cart.cart_items || []).map((it) => ({
-    id: it.id,
-    product_id: it.product_id,
-    unit: it.unit,
-    quantity: it.quantity,
-    grams: it.grams,
-    variant_label: it.variant_label,
-    variant_grams: it.variant_grams,
-    variant_price: it.variant_price,
-    unit_price: it.unit_price,
-    line_total: it.line_total,
-    is_gift: it.is_gift,
-    meta: it.meta,
-  }));
-
   return {
     id: cart.id,
     user_id: cart.user_id,
     status: cart.status,
-    currency: cart.currency,
     subtotal: Number(cart.subtotal || 0),
     discount_total: Number(cart.discount_total || 0),
     grand_total: Number(cart.grand_total || 0),
 
-    // manual coupon
+    // 🔹 Manual coupon
     coupon_code: cart.coupon_code,
     coupon_discount: Number(cart.coupon_discount || 0),
 
-    // NEW: auto coupon
-    auto_coupon_code: cart.auto_coupon_code,
+    // 🔹 Auto discount / auto coupon
+    auto_coupon_code: cart.auto_coupon_code || null,
     auto_discount: Number(cart.auto_discount || 0),
 
-    // NEW: free gift flag
-    free_gift_applied: cart.free_gift_applied || false,
+    // 🔹 Free gift flag
+    free_gift_applied: !!cart.free_gift_applied,
 
-    meta: cart.meta || {},
-    items,
-    applied_discounts: cart.applied_discounts || [],
+    // Items (paid + gifts; frontend will split)
+    items: (cart.cart_items || []).map((it) => ({
+      id: it.id,
+      product_id: it.product_id,
+      unit: it.unit,
+      quantity: it.quantity,
+      grams: it.grams,
+      variant_label: it.variant_label,
+      line_total: Number(it.line_total || 0),
+      is_gift: !!it.is_gift,
+    })),
   };
 }
 
-
-/**
- * Load product and compute price snapshot for a cart item.
- * This matches your gm/pc/variant model.
- */
 async function resolveItemPricing({ product_id, unit, grams, variant_label }) {
-  const { data: product, error } = await supabase
+  const { data: product } = await supabase
     .from("products")
-    .select(
-      `
-      *,
-      product_unit_options:product_unit_options (
-        label,
-        grams,
-        price
-      )
-    `
-    )
+    .select(`*, product_unit_options(label, grams, price)`)
     .eq("id", product_id)
     .single();
 
-  if (error || !product) throw new Error("Product not found");
+  if (!product) throw new Error("Product not found");
+
+  let unit_price = 0;
+  let finalGrams = null;
 
   if (unit === "gm") {
-    const pricePer100g = Number(product.price_per_100g || 0);
-    const g = grams || 100;
-    const unit_price = (g / 100) * pricePer100g;
-    return { unit_price, grams: g, variant_label: null, variant_grams: null, variant_price: null };
+    finalGrams = grams || 100;
+    unit_price = (finalGrams / 100) * Number(product.price_per_100g || 0);
+  } else if (unit === "pc") {
+    unit_price = Number(product.price_per_pc || 0);
+  } else if (unit === "variant") {
+    const opt = product.product_unit_options?.find(o => o.label === variant_label);
+    if (!opt) throw new Error("Variant not found");
+    unit_price = Number(opt.price || 0);
+    finalGrams = opt.grams;
   }
 
-  if (unit === "pc") {
-    const pricePerPc = Number(product.price_per_pc || 0);
-    return { unit_price: pricePerPc, grams: null, variant_label: null, variant_grams: null, variant_price: null };
-  }
-
-  if (unit === "variant") {
-    const options = product.product_unit_options || [];
-    const opt = options.find((o) => o.label === variant_label) || options[0];
-    if (!opt) throw new Error("Variant option not found for product");
-    const unit_price = Number(opt.price || 0);
-    return {
-      unit_price,
-      grams: null,
-      variant_label: opt.label,
-      variant_grams: opt.grams,
-      variant_price: unit_price,
-    };
-  }
-
-  throw new Error("Unsupported unit type");
+  return { unit_price, grams: finalGrams, variant_label, variant_grams: finalGrams, variant_price: unit_price };
 }
 
 /**
- * Controllers
+ * ==============================
+ * CONTROLLERS
+ * ==============================
  */
 
 // GET /api/cart
 export const getCart = async (req, res) => {
-  const userId = getUserIdFromRequest(req);
-  const incomingCartId = getCartIdFromRequest(req);
+  try {
+    const userId = getUserIdFromRequest(req);
+    const incomingCartId = getCartIdFromRequest(req);
 
-  const cart = await findOrCreateCart({ cartId: incomingCartId, userId });
-  const full = await recalcTotals(cart.id);
+    const cart = await findOrCreateCart({ cartId: incomingCartId, userId });
+    const full = await recalcTotals(cart.id);
 
-  // If new cart, set header so frontend can store it (x-cart-id)
-  res.setHeader("x-cart-id", full.id);
-  return res.json(mapCartResponse(full));
+    // Set header for frontend to update if ID changed (e.g., merged)
+    res.setHeader("x-cart-id", full.id);
+    return res.json(mapCartResponse(full));
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Failed to get cart" });
+  }
 };
 
 // POST /api/cart/items
 export const addItem = async (req, res) => {
-  const { product_id, unit, quantity = 1, grams, variant_label } = req.body;
+  try {
+    const { product_id, unit, quantity = 1, grams, variant_label } = req.body;
+    if (!product_id || !unit) return res.status(400).json({ error: "Missing required fields" });
 
-  if (!product_id || !unit) {
-    return res.status(400).json({ error: "product_id and unit are required" });
+    const userId = getUserIdFromRequest(req);
+    const incomingCartId = getCartIdFromRequest(req);
+    const cart = await findOrCreateCart({ cartId: incomingCartId, userId });
+
+    const qty = Math.max(1, Number(quantity));
+    const pricing = await resolveItemPricing({ product_id, unit, grams, variant_label });
+    const line_total = pricing.unit_price * qty;
+
+    // Check merge existing item
+    const { data: existingItem } = await supabase
+      .from("cart_items")
+      .select("*")
+      .eq("cart_id", cart.id)
+      .eq("product_id", product_id)
+      .eq("unit", unit)
+      .eq("grams", unit === 'gm' ? pricing.grams : null)
+      .eq("variant_label", unit === 'variant' ? pricing.variant_label : null)
+      .maybeSingle();
+
+    if (existingItem) {
+      await supabase.from("cart_items")
+        .update({ quantity: existingItem.quantity + qty, line_total: (existingItem.quantity + qty) * pricing.unit_price })
+        .eq("id", existingItem.id);
+    } else {
+      await supabase.from("cart_items").insert({
+        cart_id: cart.id,
+        product_id,
+        unit,
+        quantity: qty,
+        grams: pricing.grams,
+        variant_label: pricing.variant_label,
+        unit_price: pricing.unit_price,
+        line_total,
+        is_gift: false
+      });
+    }
+
+    const full = await recalcTotals(cart.id);
+    res.setHeader("x-cart-id", full.id);
+    return res.json(mapCartResponse(full));
+  } catch (error) {
+    console.error("AddItem Error:", error);
+    res.status(500).json({ error: error.message });
   }
-
-  const userId = getUserIdFromRequest(req);
-  const incomingCartId = getCartIdFromRequest(req);
-  const cart = await findOrCreateCart({ cartId: incomingCartId, userId });
-
-  const qty = Math.max(1, Number(quantity) || 1);
-  const pricing = await resolveItemPricing({ product_id, unit, grams, variant_label });
-
-  const line_total = pricing.unit_price * qty;
-
-  const { error: insertErr } = await supabase.from("cart_items").insert({
-    cart_id: cart.id,
-    product_id,
-    unit,
-    quantity: qty,
-    grams: pricing.grams,
-    variant_label: pricing.variant_label,
-    variant_grams: pricing.variant_grams,
-    variant_price: pricing.variant_price,
-    unit_price: pricing.unit_price,
-    line_total,
-    is_gift: false,
-  });
-
-  if (insertErr) {
-    console.error("addItem insert error:", insertErr);
-    return res.status(500).json({ error: "Failed to add item to cart" });
-  }
-
-  const full = await recalcTotals(cart.id);
-  res.setHeader("x-cart-id", full.id);
-  return res.json(mapCartResponse(full));
 };
 
 // PATCH /api/cart/items/:itemId
 export const updateItem = async (req, res) => {
-  const { itemId } = req.params;
-  const { quantity, grams } = req.body;
+  try {
+    const { itemId } = req.params;
+    const { quantity } = req.body;
+    
+    const userId = getUserIdFromRequest(req);
+    const incomingCartId = getCartIdFromRequest(req);
+    const cart = await findOrCreateCart({ cartId: incomingCartId, userId });
 
-  const userId = getUserIdFromRequest(req);
-  const incomingCartId = getCartIdFromRequest(req);
-  const cart = await findOrCreateCart({ cartId: incomingCartId, userId });
+    // Fetch item to get price
+    const { data: item } = await supabase
+      .from("cart_items")
+      .select("*")
+      .eq("id", itemId)
+      .eq("cart_id", cart.id)
+      .single();
 
-  const { data: item, error } = await supabase
-    .from("cart_items")
-    .select("*")
-    .eq("id", itemId)
-    .eq("cart_id", cart.id)
-    .single();
+    if (!item) return res.status(404).json({ error: "Item not found" });
 
-  if (error || !item) {
-    return res.status(404).json({ error: "Cart item not found" });
+    const newQty = Math.max(1, Number(quantity));
+    const newTotal = item.unit_price * newQty;
+
+    await supabase.from("cart_items").update({ quantity: newQty, line_total: newTotal }).eq("id", itemId);
+
+    const full = await recalcTotals(cart.id);
+    res.setHeader("x-cart-id", full.id);
+    return res.json(mapCartResponse(full));
+  } catch (error) {
+    res.status(500).json({ error: "Failed to update item" });
   }
-
-  let newQty = item.quantity;
-  let newGrams = item.grams;
-
-  if (typeof quantity !== "undefined") {
-    newQty = Math.max(1, Number(quantity) || 1);
-  }
-  if (typeof grams !== "undefined" && item.unit === "gm") {
-    newGrams = Number(grams) || item.grams;
-  }
-
-  // recalc unit_price / line_total if needed
-  let pricing = {
-    unit_price: item.unit_price,
-    grams: newGrams,
-    variant_label: item.variant_label,
-    variant_grams: item.variant_grams,
-    variant_price: item.variant_price,
-  };
-
-  if (item.unit === "gm" && typeof grams !== "undefined") {
-    const p = await resolveItemPricing({
-      product_id: item.product_id,
-      unit: "gm",
-      grams: newGrams,
-      variant_label: null,
-    });
-    pricing = { ...pricing, ...p };
-  }
-
-  const line_total = pricing.unit_price * newQty;
-
-  const { error: updateErr } = await supabase
-    .from("cart_items")
-    .update({
-      quantity: newQty,
-      grams: pricing.grams,
-      unit_price: pricing.unit_price,
-      line_total,
-      updated_at: new Date().toISOString(),
-    })
-    .eq("id", itemId)
-    .eq("cart_id", cart.id);
-
-  if (updateErr) {
-    console.error("updateItem error:", updateErr);
-    return res.status(500).json({ error: "Failed to update cart item" });
-  }
-
-  const full = await recalcTotals(cart.id);
-  res.setHeader("x-cart-id", full.id);
-  return res.json(mapCartResponse(full));
 };
 
 // DELETE /api/cart/items/:itemId
 export const removeItem = async (req, res) => {
-  const { itemId } = req.params;
+  try {
+    const { itemId } = req.params;
+    const userId = getUserIdFromRequest(req);
+    const incomingCartId = getCartIdFromRequest(req);
+    const cart = await findOrCreateCart({ cartId: incomingCartId, userId });
 
-  const userId = getUserIdFromRequest(req);
-  const incomingCartId = getCartIdFromRequest(req);
-  const cart = await findOrCreateCart({ cartId: incomingCartId, userId });
+    await supabase.from("cart_items").delete().eq("id", itemId).eq("cart_id", cart.id);
 
-  const { error } = await supabase
-    .from("cart_items")
-    .delete()
-    .eq("id", itemId)
-    .eq("cart_id", cart.id);
-
-  if (error) {
-    console.error("removeItem error:", error);
-    return res.status(500).json({ error: "Failed to remove cart item" });
+    const full = await recalcTotals(cart.id);
+    res.setHeader("x-cart-id", full.id);
+    return res.json(mapCartResponse(full));
+  } catch (error) {
+    res.status(500).json({ error: "Failed to remove item" });
   }
-
-  const full = await recalcTotals(cart.id);
-  res.setHeader("x-cart-id", full.id);
-  return res.json(mapCartResponse(full));
 };
 
 // POST /api/cart/apply-coupon
 export const applyCoupon = async (req, res) => {
-  const { code } = req.body;
-  if (!code) return res.status(400).json({ error: "Coupon code required" });
+  try {
+    const { code } = req.body;
+    const userId = getUserIdFromRequest(req);
+    const incomingCartId = getCartIdFromRequest(req);
+    const cart = await findOrCreateCart({ cartId: incomingCartId, userId });
 
-  const userId = getUserIdFromRequest(req);
-  const incomingCartId = getCartIdFromRequest(req);
-  const cart = await findOrCreateCart({ cartId: incomingCartId, userId });
+    const { data: coupon } = await supabase
+      .from("coupons")
+      .select("*")
+      .ilike("code", code)
+      .eq("is_active", true)
+      .maybeSingle();
 
-  // Basic coupon lookup (you can extend with per-user limits, dates, etc.)
-  const { data: coupon, error } = await supabase
-    .from("coupons")
-    .select("*")
-    .ilike("code", code)
-    .eq("is_active", true)
-    .maybeSingle();
+    if (!coupon) return res.status(400).json({ error: "Invalid coupon" });
 
-  if (error || !coupon) {
-    return res.status(400).json({ error: "Invalid or inactive coupon" });
+    // Basic validation: Min cart amount
+    if (coupon.min_cart_amount && cart.subtotal < coupon.min_cart_amount) {
+      return res.status(400).json({ error: `Minimum spend ₹${coupon.min_cart_amount} required` });
+    }
+
+    let discount = 0;
+    if (coupon.type === "percent") discount = (cart.subtotal * coupon.value) / 100;
+    else discount = coupon.value;
+
+    await supabase.from("carts").update({ 
+      coupon_code: coupon.code, 
+      coupon_discount: discount 
+    }).eq("id", cart.id);
+
+    const full = await recalcTotals(cart.id);
+    res.setHeader("x-cart-id", full.id);
+    return res.json(mapCartResponse(full));
+  } catch (error) {
+    res.status(500).json({ error: "Failed to apply coupon" });
   }
-
-  // Reload cart to get current subtotal
-  const current = await loadCartWithItems(cart.id);
-  const subtotal = Number(current.subtotal || 0);
-
-  if (coupon.min_cart_amount && subtotal < Number(coupon.min_cart_amount)) {
-    return res.status(400).json({
-      error: `Minimum cart amount ₹${coupon.min_cart_amount} required for this coupon`,
-    });
-  }
-
-  let couponDiscount = 0;
-  if (coupon.type === "percent") {
-    couponDiscount = (subtotal * Number(coupon.value)) / 100;
-  } else if (coupon.type === "fixed") {
-    couponDiscount = Number(coupon.value || 0);
-  }
-  // Optional: cap by max_discount if you add that column
-
-  const { error: updateErr } = await supabase
-    .from("carts")
-    .update({
-      coupon_code: coupon.code,
-      coupon_discount: couponDiscount,
-      updated_at: new Date().toISOString(),
-    })
-    .eq("id", cart.id);
-
-  if (updateErr) {
-    console.error("applyCoupon error:", updateErr);
-    return res.status(500).json({ error: "Failed to apply coupon" });
-  }
-
-  const full = await recalcTotals(cart.id);
-  res.setHeader("x-cart-id", full.id);
-  return res.json(mapCartResponse(full));
 };
 
 // DELETE /api/cart/coupon
 export const removeCoupon = async (req, res) => {
-  const userId = getUserIdFromRequest(req);
-  const incomingCartId = getCartIdFromRequest(req);
-  const cart = await findOrCreateCart({ cartId: incomingCartId, userId });
+  try {
+    const userId = getUserIdFromRequest(req);
+    const incomingCartId = getCartIdFromRequest(req);
+    const cart = await findOrCreateCart({ cartId: incomingCartId, userId });
 
-  const { error } = await supabase
-    .from("carts")
-    .update({
-      coupon_code: null,
-      coupon_discount: 0,
-      updated_at: new Date().toISOString(),
-    })
-    .eq("id", cart.id);
+    await supabase.from("carts").update({ coupon_code: null, coupon_discount: 0 }).eq("id", cart.id);
 
-  if (error) {
-    console.error("removeCoupon error:", error);
-    return res.status(500).json({ error: "Failed to remove coupon" });
+    const full = await recalcTotals(cart.id);
+    res.setHeader("x-cart-id", full.id);
+    return res.json(mapCartResponse(full));
+  } catch (error) {
+    res.status(500).json({ error: "Failed to remove coupon" });
   }
-
-  const full = await recalcTotals(cart.id);
-  res.setHeader("x-cart-id", full.id);
-  return res.json(mapCartResponse(full));
 };

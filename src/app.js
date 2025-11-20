@@ -7,7 +7,9 @@ import productRoutes from "./routes/productRoutes.js";
 import cartRoutes from "./routes/cartRoutes.js";
 import profileRoutes from "./routes/profileRoutes.js";
 import reviewRoutes from "./routes/reviewRoutes.js";
+
 import adminReviewsRoutes from "./routes/adminReviewsRoutes.js";
+import adminCouponRoutes from "./routes/adminCouponRoutes.js";
 
 import cookieParser from "cookie-parser"; // Ensure this is imported
 import helmet from 'helmet';
@@ -58,7 +60,7 @@ app.use("/api/cart", cartRoutes);
 app.use("/api/contact", contactRoutes);
 app.use("/api/profile", profileRoutes);
 
-
+app.use("/api/admin/coupons", adminCouponRoutes);
 app.use("/api/admin/reviews", adminReviewsRoutes);
 
 // --- Global Error Handler (Optional but Recommended) ---

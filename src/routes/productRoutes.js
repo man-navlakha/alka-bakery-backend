@@ -6,6 +6,7 @@ import {
   createProduct,
   updateProduct,
   deleteProduct,
+  uploadMiddleware,
 } from "../controllers/productController.js";
 
 const router = express.Router();
@@ -16,11 +17,11 @@ router.get("/", getProducts);
 // Public: single product
 router.get("/:id", getProductById);
 
-// Protected/Admin: create product (you should protect this route with auth middleware in production)
-router.post("/", createProduct);
+// Add the middleware here. 'images' matches the field name in Postman/Frontend
+router.post('/', uploadMiddleware, createProduct); 
 
-// Protected/Admin: update product
-router.put("/:id", updateProduct);
+// Add here too
+router.put('/:id', uploadMiddleware, updateProduct);
 
 // Protected/Admin: delete product
 router.delete("/:id", deleteProduct);

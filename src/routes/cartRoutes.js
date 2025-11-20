@@ -9,9 +9,10 @@ import {
   applyCoupon,
   removeCoupon,
 } from "../controllers/cartController.js";
+import { identifyUser } from "../middleware/authMiddleware.js";
 
 const router = express.Router();
-
+router.use(identifyUser);
 // GET /api/cart
 router.get("/", asyncHandler(getCart));
 
