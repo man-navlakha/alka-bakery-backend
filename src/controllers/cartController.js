@@ -153,142 +153,85 @@ async function recalcTotals(cartId) {
   const cart = await loadCartWithItems(cartId);
   const items = cart.cart_items || [];
 
-  // 1. Subtotal (Sum of non-gift items)
+  // 1. Calculate Subtotal
   const subtotal = items
     .filter((it) => !it.is_gift)
     .reduce((sum, it) => sum + Number(it.line_total || 0), 0);
 
-  // --- A. MANUAL COUPON LOGIC ---
-  let manualDiscount = 0;
-  let manualCode = cart.coupon_code;
-  let manualGift = null; // { product_id, qty }
+  const coupon_discount = Number(cart.coupon_discount || 0);
+  let auto_discount = 0;
+  let auto_coupon_code = null;
+  let freeGiftApplied = false;
 
-  if (manualCode) {
-    // Fetch full coupon details to validate and check for gifts
-    const { data: coupon } = await supabase
-      .from("coupons")
-      .select("*")
-      .ilike("code", manualCode)
-      .maybeSingle();
-
-    const now = new Date();
-    let isValid = true;
-
-    if (!coupon || !coupon.is_active) isValid = false;
-    else if (coupon.valid_from && new Date(coupon.valid_from) > now) isValid = false;
-    else if (coupon.valid_to && new Date(coupon.valid_to) < now) isValid = false;
-    else if (coupon.min_cart_amount && subtotal < coupon.min_cart_amount) isValid = false;
-
-    if (isValid) {
-      if (coupon.type === "percent") {
-        manualDiscount = (subtotal * Number(coupon.value)) / 100;
-      } else {
-        manualDiscount = Number(coupon.value || 0);
-      }
-
-      // Check for Manual Free Gift
-      if (coupon.free_gift_product_id) {
-        manualGift = {
-          product_id: coupon.free_gift_product_id,
-          quantity: Number(coupon.free_gift_qty) || 1
-        };
-      }
-    } else {
-      // Remove invalid coupon
-      manualCode = null;
-      manualDiscount = 0;
-    }
-  }
-
-  // --- B. AUTO DISCOUNT LOGIC ---
-  let autoDiscount = 0;
-  let autoCode = null;
-  let autoGift = null; // { product_id, qty }
-
+  // 2. Check Auto-Coupons / Free Gifts
   if (subtotal > 0) {
-    const { data: autoCoupons } = await supabase
+    let query = supabase
       .from("coupons")
       .select("*")
       .eq("is_auto", true)
       .eq("is_active", true)
       .lte("auto_threshold", subtotal);
 
-    if (autoCoupons && autoCoupons.length > 0) {
-      let best = null;
-      let maxVal = -1;
+    // Prevent double dipping: If a manual coupon is applied, exclude it from auto-check
+    if (cart.coupon_code) {
+      query = query.neq("code", cart.coupon_code);
+    }
 
-      // Find best auto offer
+    const { data: autoCoupons } = await query;
+
+    if (autoCoupons && autoCoupons.length > 0) {
+      // Pick best discount
+      let bestCoupon = null;
+      let maxDiscount = 0;
+
       for (const c of autoCoupons) {
         let d = 0;
         if (c.type === "percent") d = (subtotal * Number(c.value)) / 100;
-        else d = Number(c.value || 0);
-        if (d > maxVal) {
-          maxVal = d;
-          best = c;
+        else if (c.type === "fixed") d = Number(c.value || 0);
+        
+        if (d >= maxDiscount) {
+          maxDiscount = d;
+          bestCoupon = c;
         }
       }
 
-      if (best) {
-        autoDiscount = maxVal;
-        autoCode = best.code;
-        if (best.free_gift_product_id) {
-          autoGift = {
-            product_id: best.free_gift_product_id,
-            quantity: Number(best.free_gift_qty) || 1
-          };
+      if (bestCoupon) {
+        auto_discount = maxDiscount;
+        auto_coupon_code = bestCoupon.code;
+
+        // Apply Free Gift if configured
+        if (bestCoupon.free_gift_product_id) {
+          const giftId = bestCoupon.free_gift_product_id;
+          const giftQty = bestCoupon.free_gift_qty || 1;
+
+          // Check if gift exists
+          const existingGift = items.find(i => i.product_id === giftId && i.is_gift);
+          
+          if (!existingGift) {
+            await supabase.from("cart_items").insert({
+              cart_id: cartId,
+              product_id: giftId,
+              unit: "pc",
+              quantity: giftQty,
+              unit_price: 0,
+              line_total: 0,
+              is_gift: true
+            });
+          } else if (existingGift.quantity !== giftQty) {
+             await supabase.from("cart_items").update({ quantity: giftQty }).eq("id", existingGift.id);
+          }
+          freeGiftApplied = true;
         }
       }
     }
   }
-
-  // --- C. SYNC FREE GIFTS ---
-  // Combine required gifts from Manual and Auto
-  const requiredGifts = [];
-  if (manualGift) requiredGifts.push(manualGift);
-  if (autoGift) requiredGifts.push(autoGift);
-
-  // 1. Remove gifts that are no longer valid
-  const existingGifts = items.filter((it) => it.is_gift);
-  for (const existing of existingGifts) {
-    // Check if this existing gift matches any required gift
-    const matchIndex = requiredGifts.findIndex(
-      (req) => req.product_id === existing.product_id
-    );
-
-    if (matchIndex !== -1) {
-      // Gift is valid, update quantity if needed
-      const req = requiredGifts[matchIndex];
-      if (existing.quantity !== req.quantity) {
-        await supabase
-          .from("cart_items")
-          .update({ quantity: req.quantity })
-          .eq("id", existing.id);
-      }
-      // Remove from required list so we don't add it again
-      requiredGifts.splice(matchIndex, 1);
-    } else {
-      // Gift is no longer valid, delete it
-      await supabase.from("cart_items").delete().eq("id", existing.id);
-    }
+// 3. Cleanup invalid gifts
+  if (!freeGiftApplied) {
+    await supabase.from("cart_items").delete().eq("cart_id", cartId).eq("is_gift", true);
   }
 
-  // 2. Add new gifts (remaining in requiredGifts)
-  for (const req of requiredGifts) {
-    await supabase.from("cart_items").insert({
-      cart_id: cartId,
-      product_id: req.product_id,
-      unit: "pc", // Default unit for gifts
-      quantity: req.quantity,
-      unit_price: 0,
-      line_total: 0,
-      is_gift: true,
-    });
-  }
-
-  const freeGiftApplied = manualGift !== null || autoGift !== null;
-
-  // --- D. UPDATE TOTALS ---
-  const discount_total = manualDiscount + autoDiscount;
+  // 4. Update Cart Totals
+  const discount_total = coupon_discount + auto_discount;
   const grand_total = Math.max(0, subtotal - discount_total);
 
   const { error } = await supabase
@@ -297,10 +240,9 @@ async function recalcTotals(cartId) {
       subtotal,
       discount_total,
       grand_total,
-      coupon_code: manualCode,
-      coupon_discount: manualDiscount,
-      auto_discount: autoDiscount,
-      auto_coupon_code: autoCode,
+      coupon_discount,
+      auto_discount,
+      auto_coupon_code,
       free_gift_applied: freeGiftApplied,
       updated_at: new Date().toISOString(),
     })
@@ -493,6 +435,26 @@ export const removeItem = async (req, res) => {
     res.status(500).json({ error: "Failed to remove item" });
   }
 };
+
+
+export const getAvailableCoupons = async (req, res) => {
+  try {
+    // Fetch active "auto" coupons which act as public offers
+    const { data, error } = await supabase
+      .from("coupons")
+      .select("code, description, type, value, min_cart_amount")
+      .eq("is_active", true)
+      .eq("is_auto", true)
+      .order("min_cart_amount", { ascending: true });
+
+    if (error) throw error;
+    return res.json(data);
+  } catch (error) {
+    console.error("getAvailableCoupons error:", error);
+    res.status(500).json({ error: "Failed to load coupons" });
+  }
+};
+
 
 export const applyCoupon = async (req, res) => {
   try {

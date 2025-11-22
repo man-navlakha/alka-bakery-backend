@@ -8,6 +8,7 @@ import {
   removeItem,
   applyCoupon,
   removeCoupon,
+  getAvailableCoupons,
 } from "../controllers/cartController.js";
 import { identifyUser } from "../middleware/authMiddleware.js";
 
@@ -15,6 +16,9 @@ const router = express.Router();
 router.use(identifyUser);
 // GET /api/cart
 router.get("/", asyncHandler(getCart));
+
+// GET /api/cart/coupons (New public list for dropdown)
+router.get("/coupons", asyncHandler(getAvailableCoupons));
 
 // POST /api/cart/items
 router.post("/items", asyncHandler(addItem));
