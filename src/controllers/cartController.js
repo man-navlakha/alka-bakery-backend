@@ -1,4 +1,3 @@
-// src/controllers/cartController.js
 import { supabase } from "../config/supabase.js";
 import { randomUUID } from "node:crypto";
 
@@ -11,13 +10,14 @@ import { randomUUID } from "node:crypto";
 function getCartIdFromRequest(req) {
   const headerId = req.headers["x-cart-id"];
   const cookieId = req.cookies?.cart_id;
-  return headerId || cookieId || null;
+  const id = headerId || cookieId || null;
+  return id;
 }
 
 function getUserIdFromRequest(req) {
   const user = req.user;
-  const userId = user?.id || user || null;
-  if (typeof userId === 'object') return null;
+  const userId = user?.id || user || null; 
+  if (typeof userId === 'object') return null; 
   return userId;
 }
 
@@ -55,7 +55,7 @@ async function findOrCreateCart({ cartId, userId }) {
       if (userCart) {
         await mergeCartItems(guestCart.id, userCart.id);
         await supabase.from("carts").update({ status: "merged" }).eq("id", guestCart.id);
-        return userCart;
+        return userCart; 
       } else {
         await supabase.from("carts").update({ user_id: userId }).eq("id", guestCart.id);
         guestCart.user_id = userId;
@@ -72,7 +72,7 @@ async function findOrCreateCart({ cartId, userId }) {
     .from("carts")
     .insert({
       id: newId,
-      user_id: userId || null,
+      user_id: userId || null, 
       status: "active",
       currency: "INR",
       subtotal: 0,
@@ -101,7 +101,7 @@ async function mergeCartItems(sourceCartId, targetCartId) {
       .eq("cart_id", targetCartId)
       .eq("product_id", item.product_id)
       .eq("unit", item.unit)
-      .eq("variant_label", item.variant_label || null)
+      .eq("variant_label", item.variant_label || null) 
       .maybeSingle();
 
     if (existing) {
@@ -121,8 +121,6 @@ async function mergeCartItems(sourceCartId, targetCartId) {
   }
 }
 
-
-
 async function loadCartWithItems(cartId) {
   const { data: cart, error } = await supabase
     .from("carts")
@@ -130,14 +128,9 @@ async function loadCartWithItems(cartId) {
       *,
       cart_items:cart_items (
         id, product_id, unit, quantity, grams, variant_label, 
-        variant_grams, variant_price, unit_price, line_total, is_gift, meta,
-        products ( 
-          name, 
-          product_images ( url, position ) 
-        ) 
+        variant_grams, variant_price, unit_price, line_total, is_gift, meta
       )
     `)
-    // ^ FIXED: Removed 'image', added 'product_images ( url, position )'
     .eq("id", cartId)
     .single();
 
@@ -146,91 +139,147 @@ async function loadCartWithItems(cartId) {
 }
 
 /**
- * 🛠️ FIXED: Comprehensive Recalculation Logic
- * Handles both Manual and Auto coupons + Free Gifts correctly.
+ * 🔹 CORE LOGIC: Recalculate Totals, Apply Coupons (Manual & Auto), Add/Remove Gifts
  */
 async function recalcTotals(cartId) {
   const cart = await loadCartWithItems(cartId);
   const items = cart.cart_items || [];
 
-  // 1. Calculate Subtotal
+  // 1. Calculate Subtotal (exclude gifts from sum)
   const subtotal = items
     .filter((it) => !it.is_gift)
     .reduce((sum, it) => sum + Number(it.line_total || 0), 0);
 
-  const coupon_discount = Number(cart.coupon_discount || 0);
+  // State for calculation
+  let coupon_discount = 0;
   let auto_discount = 0;
-  let auto_coupon_code = null;
+  let active_coupon_code = null; // To store the code of the *effective* coupon (manual or auto)
+  let final_auto_code = null;
+  let final_manual_code = cart.coupon_code;
   let freeGiftApplied = false;
+  let activeCouponObj = null;
 
-  // 2. Check Auto-Coupons / Free Gifts
+  // 2. Check Manual Coupon Validity
+  if (final_manual_code) {
+    const { data: manualCoupon } = await supabase
+      .from("coupons")
+      .select("*")
+      .eq("code", final_manual_code)
+      .eq("is_active", true)
+      .maybeSingle();
+
+    if (manualCoupon) {
+      // Check requirements
+      if (subtotal >= (manualCoupon.min_cart_amount || 0)) {
+        activeCouponObj = manualCoupon;
+        active_coupon_code = manualCoupon.code;
+        
+        // Calculate Discount
+        if (manualCoupon.type === "percent") {
+          coupon_discount = (subtotal * Number(manualCoupon.value)) / 100;
+        } else {
+          coupon_discount = Number(manualCoupon.value);
+        }
+      } else {
+        // Threshold not met -> Disable manual coupon effects (but keep code or remove? usually remove if invalid)
+        // For better UX, we remove it if invalid so user knows.
+        final_manual_code = null; 
+      }
+    } else {
+      // Invalid/Inactive -> Remove
+      final_manual_code = null;
+    }
+  }
+
+  // 3. Check Auto Coupon (Only if no manual coupon is active)
+  // Note: Some systems stack, but typical logic is Manual > Auto.
+
+
+   let bestAuto = null;
+  let bestAutoDiscount = 0;
   if (subtotal > 0) {
-    let query = supabase
+    const { data: autoCoupons } = await supabase
       .from("coupons")
       .select("*")
       .eq("is_auto", true)
       .eq("is_active", true)
-      .lte("auto_threshold", subtotal);
-
-    // Prevent double dipping: If a manual coupon is applied, exclude it from auto-check
-    if (cart.coupon_code) {
-      query = query.neq("code", cart.coupon_code);
-    }
-
-    const { data: autoCoupons } = await query;
+      .lte("auto_threshold", subtotal)
+      .order("value", { ascending: false });
 
     if (autoCoupons && autoCoupons.length > 0) {
-      // Pick best discount
-      let bestCoupon = null;
-      let maxDiscount = 0;
-
       for (const c of autoCoupons) {
         let d = 0;
         if (c.type === "percent") d = (subtotal * Number(c.value)) / 100;
-        else if (c.type === "fixed") d = Number(c.value || 0);
-        
-        if (d >= maxDiscount) {
-          maxDiscount = d;
-          bestCoupon = c;
-        }
-      }
+        else d = Number(c.value);
 
-      if (bestCoupon) {
-        auto_discount = maxDiscount;
-        auto_coupon_code = bestCoupon.code;
-
-        // Apply Free Gift if configured
-        if (bestCoupon.free_gift_product_id) {
-          const giftId = bestCoupon.free_gift_product_id;
-          const giftQty = bestCoupon.free_gift_qty || 1;
-
-          // Check if gift exists
-          const existingGift = items.find(i => i.product_id === giftId && i.is_gift);
-          
-          if (!existingGift) {
-            await supabase.from("cart_items").insert({
-              cart_id: cartId,
-              product_id: giftId,
-              unit: "pc",
-              quantity: giftQty,
-              unit_price: 0,
-              line_total: 0,
-              is_gift: true
-            });
-          } else if (existingGift.quantity !== giftQty) {
-             await supabase.from("cart_items").update({ quantity: giftQty }).eq("id", existingGift.id);
-          }
-          freeGiftApplied = true;
+        if (d > bestAutoDiscount) {
+          bestAutoDiscount = d;
+          bestAuto = c;
         }
       }
     }
   }
-// 3. Cleanup invalid gifts
-  if (!freeGiftApplied) {
-    await supabase.from("cart_items").delete().eq("cart_id", cartId).eq("is_gift", true);
+
+  if (bestAuto) {
+    final_auto_code = bestAuto.code;
+    auto_discount = bestAutoDiscount;
+    // NOTE: we intentionally DO NOT set:
+    // activeCouponObj = bestAuto;
+    // This prevents auto coupon from auto-applying gifts or changing totals.
+  } else {
+    final_auto_code = null;
+    auto_discount = 0;
   }
 
-  // 4. Update Cart Totals
+  // 4. Apply Free Gift (Based on whichever coupon is ACTIVE)
+  // 4. Apply Free Gift (ONLY if a manual coupon is active and it grants a gift)
+  if (activeCouponObj && activeCouponObj.free_gift_product_id) {
+    const giftId = activeCouponObj.free_gift_product_id;
+    const giftQty = activeCouponObj.free_gift_qty || 1;
+
+    const existingGift = items.find(i => i.product_id === giftId && i.is_gift);
+
+    if (!existingGift) {
+      // Add Gift
+      await supabase.from("cart_items").insert({
+        cart_id: cartId,
+        product_id: giftId,
+        unit: "pc",
+        quantity: giftQty,
+        unit_price: 0,
+        line_total: 0,
+        is_gift: true
+      });
+    } else if (existingGift.quantity !== giftQty) {
+      // Update Gift Qty
+      await supabase.from("cart_items").update({ quantity: giftQty }).eq("id", existingGift.id);
+    }
+    freeGiftApplied = true;
+  } else {
+    // No manual active gift-coupon -> ensure gifts are removed
+    freeGiftApplied = false;
+  }
+
+  // 5. Cleanup Invalid Gifts
+  // If freeGiftApplied is true, we must ensure NO OTHER gifts exist (e.g. from previous coupon)
+  // 5. Cleanup invalid gifts
+  if (freeGiftApplied && activeCouponObj) {
+    // keep gift matching activeCouponObj, remove other gifts
+    await supabase.from("cart_items")
+      .delete()
+      .eq("cart_id", cartId)
+      .eq("is_gift", true)
+      .neq("product_id", activeCouponObj.free_gift_product_id);
+  } else {
+    // remove all gifts if none should be applied
+    await supabase.from("cart_items")
+      .delete()
+      .eq("cart_id", cartId)
+      .eq("is_gift", true);
+  }
+
+
+  // 6. Update Cart Record
   const discount_total = coupon_discount + auto_discount;
   const grand_total = Math.max(0, subtotal - discount_total);
 
@@ -241,8 +290,9 @@ async function recalcTotals(cartId) {
       discount_total,
       grand_total,
       coupon_discount,
+      coupon_code: final_manual_code, // Update manual code (might have been removed)
       auto_discount,
-      auto_coupon_code,
+      auto_coupon_code: final_auto_code,
       free_gift_applied: freeGiftApplied,
       updated_at: new Date().toISOString(),
     })
@@ -252,7 +302,6 @@ async function recalcTotals(cartId) {
 
   return await loadCartWithItems(cartId);
 }
-
 
 function mapCartResponse(cart) {
   return {
@@ -267,25 +316,16 @@ function mapCartResponse(cart) {
     auto_coupon_code: cart.auto_coupon_code || null,
     auto_discount: Number(cart.auto_discount || 0),
     free_gift_applied: !!cart.free_gift_applied,
-    items: (cart.cart_items || []).map((it) => {
-      // Extract the first image from the sorted array (if available)
-      const images = it.products?.product_images || [];
-      // Optional: Sort by position if you have that column, otherwise just take the first
-      const firstImage = images.sort((a, b) => (a.position || 0) - (b.position || 0))[0]?.url;
-
-      return {
-        id: it.id,
-        product_id: it.product_id,
-        product_name: it.products?.name,       // ✅ Correctly mapped name
-        product_image: firstImage || null,     // ✅ Correctly mapped image URL
-        unit: it.unit,
-        quantity: it.quantity,
-        grams: it.grams,
-        variant_label: it.variant_label,
-        line_total: Number(it.line_total || 0),
-        is_gift: !!it.is_gift,
-      };
-    }),
+    items: (cart.cart_items || []).map((it) => ({
+      id: it.id,
+      product_id: it.product_id,
+      unit: it.unit,
+      quantity: it.quantity,
+      grams: it.grams,
+      variant_label: it.variant_label,
+      line_total: Number(it.line_total || 0),
+      is_gift: !!it.is_gift,
+    })),
   };
 }
 
@@ -326,8 +366,10 @@ export const getCart = async (req, res) => {
   try {
     const userId = getUserIdFromRequest(req);
     const incomingCartId = getCartIdFromRequest(req);
+
     const cart = await findOrCreateCart({ cartId: incomingCartId, userId });
     const full = await recalcTotals(cart.id);
+
     res.setHeader("x-cart-id", full.id);
     return res.json(mapCartResponse(full));
   } catch (error) {
@@ -335,6 +377,24 @@ export const getCart = async (req, res) => {
     res.status(500).json({ error: "Failed to get cart" });
   }
 };
+
+// GET /api/cart/coupons
+export const getAvailableCoupons = async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from("coupons")
+      .select("code, description, type, value, min_cart_amount")
+      .eq("is_active", true)
+      .order("min_cart_amount", { ascending: true });
+
+    if (error) throw error;
+    return res.json(data);
+  } catch (error) {
+    console.error("getAvailableCoupons error:", error);
+    res.status(500).json({ error: "Failed to load coupons" });
+  }
+};
+
 
 export const addItem = async (req, res) => {
   try {
@@ -357,7 +417,7 @@ export const addItem = async (req, res) => {
       .eq("unit", unit)
       .eq("grams", unit === 'gm' ? pricing.grams : null)
       .eq("variant_label", unit === 'variant' ? pricing.variant_label : null)
-      .eq("is_gift", false) // Don't merge with gift items
+      .eq("is_gift", false) 
       .maybeSingle();
 
     if (existingItem) {
@@ -391,6 +451,7 @@ export const updateItem = async (req, res) => {
   try {
     const { itemId } = req.params;
     const { quantity } = req.body;
+    
     const userId = getUserIdFromRequest(req);
     const incomingCartId = getCartIdFromRequest(req);
     const cart = await findOrCreateCart({ cartId: incomingCartId, userId });
@@ -403,7 +464,6 @@ export const updateItem = async (req, res) => {
       .single();
 
     if (!item) return res.status(404).json({ error: "Item not found" });
-    if (item.is_gift) return res.status(400).json({ error: "Cannot modify gift items directly" });
 
     const newQty = Math.max(1, Number(quantity));
     const newTotal = item.unit_price * newQty;
@@ -425,7 +485,6 @@ export const removeItem = async (req, res) => {
     const incomingCartId = getCartIdFromRequest(req);
     const cart = await findOrCreateCart({ cartId: incomingCartId, userId });
 
-    // Prevent deleting gifts manually if you want, or allow it (logic below will re-add it if criteria met)
     await supabase.from("cart_items").delete().eq("id", itemId).eq("cart_id", cart.id);
 
     const full = await recalcTotals(cart.id);
@@ -436,26 +495,6 @@ export const removeItem = async (req, res) => {
   }
 };
 
-
-export const getAvailableCoupons = async (req, res) => {
-  try {
-    // Fetch active "auto" coupons which act as public offers
-    const { data, error } = await supabase
-      .from("coupons")
-      .select("code, description, type, value, min_cart_amount")
-      .eq("is_active", true)
-      .eq("is_auto", true)
-      .order("min_cart_amount", { ascending: true });
-
-    if (error) throw error;
-    return res.json(data);
-  } catch (error) {
-    console.error("getAvailableCoupons error:", error);
-    res.status(500).json({ error: "Failed to load coupons" });
-  }
-};
-
-
 export const applyCoupon = async (req, res) => {
   try {
     const { code } = req.body;
@@ -463,17 +502,30 @@ export const applyCoupon = async (req, res) => {
     const incomingCartId = getCartIdFromRequest(req);
     const cart = await findOrCreateCart({ cartId: incomingCartId, userId });
 
-    // Just set the code here. recalcTotals handles validation and gifts.
+    // We simply update the code here. recalcTotals handles validation and logic.
+    // (This allows recalcTotals to be the single source of truth for validation logic)
+    
+    // First quick check to see if coupon exists before attaching
+    const { data: coupon } = await supabase
+      .from("coupons")
+      .select("*")
+      .ilike("code", code)
+      .eq("is_active", true)
+      .maybeSingle();
+
+    if (!coupon) return res.status(400).json({ error: "Invalid coupon" });
+
+    // Attach code to cart temporarily
     await supabase.from("carts").update({ 
-      coupon_code: code ? code.trim().toUpperCase() : null
+      coupon_code: coupon.code, 
+      // coupon_discount will be calculated in recalcTotals
     }).eq("id", cart.id);
 
-    // This will validate the coupon we just set and apply effects
     const full = await recalcTotals(cart.id);
     
-    // Check if the code stuck (valid) or was removed (invalid)
-    if (code && !full.coupon_code) {
-       return res.status(400).json({ error: "Invalid or inapplicable coupon code" });
+    // If recalcTotals removed the code (due to threshold), warn user
+    if (!full.coupon_code) {
+       return res.status(400).json({ error: `Coupon valid but threshold not met (Min ₹${coupon.min_cart_amount || 0})` });
     }
 
     res.setHeader("x-cart-id", full.id);
