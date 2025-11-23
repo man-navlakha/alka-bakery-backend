@@ -1,6 +1,6 @@
 {
   "name": "alka-bakery-backend",
-  "version": "PAYMENT ONLINE ADDED - dt.23-11-25 - 1.08.06",
+  "version": "PAYMENT ONLINE ADDED - dt.23-11-25 - 1.08.10",
   "type": "module",
   "scripts": {
     "start": "node api/index.js",

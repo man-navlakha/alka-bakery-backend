@@ -138,10 +138,17 @@ export const validatePhonePePayment = async (req, res) => {
       const { data: address } = await supabaseAdmin.from("addresses").select("*").eq("id", addressId).single();
       const finalTotal = Number(cart.grand_total) + 50;
 
-      const { data: order } = await supabaseAdmin.from("orders").insert({
-          user_id: userId, address_snapshot: address, subtotal: cart.subtotal,
-          discount_amount: cart.discount_total, coupon_code: cart.coupon_code,
-          delivery_fee: 50, grand_total: finalTotal, payment_method: "PhonePe", status: "paid"
+     const { data: order } = await supabaseAdmin.from("orders").insert({
+          user_id: userId,
+          address_snapshot: address,
+          subtotal: cart.subtotal,
+          discount_amount: cart.discount_total,
+          coupon_code: cart.coupon_code,
+          delivery_fee: 50,
+          grand_total: finalTotal,
+          payment_method: "PhonePe",
+          status: "pending",       // Order Status
+          payment_status: "paid"   // <--- NEW: Mark as Paid
       }).select().single();
 
       const items = cart.cart_items.map(i => ({

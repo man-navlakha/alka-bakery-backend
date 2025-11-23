@@ -1,4 +1,3 @@
-// src/controllers/orderController.js
 import { supabaseAdmin } from "../config/supabase.js"; // <--- Import Admin Client
 
 export const placeOrder = async (req, res) => {
@@ -78,11 +77,11 @@ export const placeOrder = async (req, res) => {
     await supabaseAdmin.from("carts").update({ 
       subtotal: 0, 
       grand_total: 0, 
-      discount_total: 0,
-      coupon_code: null,
-      coupon_discount: 0,
-      auto_coupon_code: null,
-      auto_discount: 0
+      discount_total: 0, 
+      coupon_code: null, 
+      coupon_discount: 0, 
+      auto_coupon_code: null, 
+      auto_discount: 0 
     }).eq("id", cart.id);
 
     res.status(201).json({ message: "Order placed successfully!", orderId: order.id });
@@ -108,3 +107,38 @@ export const getUserOrders = async (req, res) => {
     res.status(500).json({ message: "Failed to fetch orders" });
   }
 };
+
+export const getAllOrdersAdmin = async (req, res) => {
+  try {
+    // Fetch all orders with items
+    const { data, error } = await supabaseAdmin
+      .from("orders")
+      .select("*, order_items(*)") // You can also join 'users(name, email)' if you have foreign keys set up correctly
+      .order("created_at", { ascending: false });
+
+    if (error) throw error;
+    res.json(data);
+  } catch (error) {
+    console.error("Admin Get Orders Error:", error);
+    res.status(500).json({ message: "Failed to fetch orders" });
+  }
+};
+
+export const updateOrderStatus = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { status } = req.body;
+        
+        const { data, error } = await supabaseAdmin
+            .from("orders")
+            .update({ status })
+            .eq("id", id)
+            .select()
+            .single();
+            
+        if(error) throw error;
+        res.json(data);
+    } catch (e) {
+        res.status(500).json({message: "Update failed"});
+    }
+}

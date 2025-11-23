@@ -10,9 +10,9 @@ import reviewRoutes from "./routes/reviewRoutes.js";
 import addressRoutes from "./routes/addressRoutes.js";
 import adminReviewsRoutes from "./routes/adminReviewsRoutes.js";
 import adminCouponRoutes from "./routes/adminCouponRoutes.js";
-import { autoSuggest, getPlaceDetails } from './services/mapplsService.js';
 import orderRoutes from "./routes/orderRoutes.js";
-import paymentRoutes from "./routes/paymentRoutes.js";
+import adminOrderRoutes from "./routes/adminOrderRoutes.js"; // Import new file
+import { autoSuggest, getPlaceDetails } from './services/mapplsService.js';
 // Note: Ensure the path matches where you created the file. 
 // If you put it in 'services', use './services/mapplsService.js'.
 import cookieParser from "cookie-parser"; // Ensure this is imported
@@ -54,7 +54,6 @@ app.use('/api/auth/refresh-token', authLimiter); // Good to limit refresh attemp
 app.use("/api", reviewRoutes);
 
 app.use("/api/addresses", addressRoutes);
-app.use("/api/payment", paymentRoutes);
 
 // --- Routes ---
 // Test route
@@ -66,10 +65,11 @@ app.use("/api/products", productRoutes);
 app.use("/api/cart", cartRoutes);
 app.use("/api/contact", contactRoutes);
 app.use("/api/profile", profileRoutes);
-
 app.use("/api/orders", orderRoutes);
+
 app.use("/api/admin/coupons", adminCouponRoutes);
 app.use("/api/admin/reviews", adminReviewsRoutes);
+app.use("/api/admin/orders", adminOrderRoutes);
 
 // --- Global Error Handler (Optional but Recommended) ---
 // Add a simple error handler at the end
