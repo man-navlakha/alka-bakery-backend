@@ -14,9 +14,6 @@ import adminCouponRoutes from "./routes/adminCouponRoutes.js";
 import cookieParser from "cookie-parser"; // Ensure this is imported
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
-import mapRoutes from "./routes/map.routes.js";
-import addressRoutes from "./routes/address.routes.js";
-import deliveryRoutes from "./routes/delivery.routes.js";
 
 
 dotenv.config();
@@ -52,10 +49,6 @@ app.use('/api/auth/register', authLimiter);
 app.use('/api/auth/refresh-token', authLimiter); // Good to limit refresh attempts too
 
 app.use("/api", reviewRoutes);
-
-app.use("/api/map", mapRoutes);
-app.use("/api/address", addressRoutes);
-app.use("/api/delivery", deliveryRoutes);
 
 
 
