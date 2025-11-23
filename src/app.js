@@ -11,6 +11,7 @@ import addressRoutes from "./routes/addressRoutes.js";
 import adminReviewsRoutes from "./routes/adminReviewsRoutes.js";
 import adminCouponRoutes from "./routes/adminCouponRoutes.js";
 import { autoSuggest, getPlaceDetails } from './services/mapplsService.js';
+import orderRoutes from "./routes/orderRoutes.js";
 // Note: Ensure the path matches where you created the file. 
 // If you put it in 'services', use './services/mapplsService.js'.
 import cookieParser from "cookie-parser"; // Ensure this is imported
@@ -64,6 +65,7 @@ app.use("/api/cart", cartRoutes);
 app.use("/api/contact", contactRoutes);
 app.use("/api/profile", profileRoutes);
 
+app.use("/api/orders", orderRoutes);
 app.use("/api/admin/coupons", adminCouponRoutes);
 app.use("/api/admin/reviews", adminReviewsRoutes);
 
