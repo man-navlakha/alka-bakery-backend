@@ -12,6 +12,7 @@ import adminReviewsRoutes from "./routes/adminReviewsRoutes.js";
 import adminCouponRoutes from "./routes/adminCouponRoutes.js";
 import { autoSuggest, getPlaceDetails } from './services/mapplsService.js';
 import orderRoutes from "./routes/orderRoutes.js";
+import paymentRoutes from "./routes/paymentRoutes.js";
 // Note: Ensure the path matches where you created the file. 
 // If you put it in 'services', use './services/mapplsService.js'.
 import cookieParser from "cookie-parser"; // Ensure this is imported
@@ -53,6 +54,7 @@ app.use('/api/auth/refresh-token', authLimiter); // Good to limit refresh attemp
 app.use("/api", reviewRoutes);
 
 app.use("/api/addresses", addressRoutes);
+app.use("/api/payment", paymentRoutes);
 
 // --- Routes ---
 // Test route
