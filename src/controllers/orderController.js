@@ -124,21 +124,57 @@ export const getAllOrdersAdmin = async (req, res) => {
   }
 };
 
-export const updateOrderStatus = async (req, res) => {
-    try {
-        const { id } = req.params;
-        const { status } = req.body;
-        
-        const { data, error } = await supabaseAdmin
-            .from("orders")
-            .update({ status })
-            .eq("id", id)
-            .select()
-            .single();
-            
-        if(error) throw error;
-        res.json(data);
-    } catch (e) {
-        res.status(500).json({message: "Update failed"});
+// controllers/orderController.js (or same file you posted)
+export const updateOrder = async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!id) return res.status(400).json({ message: "Order id missing" });
+
+    // Accept only these keys from client
+    const allowed = ["status", "payment_status", "payment_method"];
+    const payload = {};
+    for (const k of allowed) {
+      if (Object.prototype.hasOwnProperty.call(req.body, k)) {
+        payload[k] = req.body[k];
+      }
     }
-}
+
+    if (Object.keys(payload).length === 0) {
+      return res.status(400).json({ message: "Nothing to update" });
+    }
+
+    // Basic validation (customize as per your app)
+    const allowedStatuses = ["pending", "processing", "shipped", "delivered", "cancelled"];
+    if (payload.status && !allowedStatuses.includes(payload.status)) {
+      return res.status(400).json({ message: "Invalid status value" });
+    }
+    const allowedPaymentStatus = ["paid", "pending", "refunded"];
+    if (payload.payment_status && !allowedPaymentStatus.includes(payload.payment_status)) {
+      return res.status(400).json({ message: "Invalid payment_status value" });
+    }
+
+    // Update using admin client (bypass RLS)
+    const { data, error, status } = await supabaseAdmin
+      .from("orders")
+      .update(payload)
+      .eq("id", id)
+      .select()
+      .single();
+
+    if (error) {
+      console.error("Supabase update error:", { message: error.message, details: error.details, hint: error.hint });
+      // If Supabase returns 400/429/5xx, forward meaningful info
+      return res.status(500).json({ message: "Database update failed", details: error.message });
+    }
+
+    if (!data) {
+      return res.status(404).json({ message: "Order not found" });
+    }
+
+    return res.json(data);
+  } catch (err) {
+    console.error("UpdateOrder caught:", err);
+    // Return error details in development; keep generic in production
+    return res.status(500).json({ message: "Update failed", details: err.message });
+  }
+};

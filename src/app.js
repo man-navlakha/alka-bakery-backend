@@ -13,6 +13,8 @@ import adminCouponRoutes from "./routes/adminCouponRoutes.js";
 import orderRoutes from "./routes/orderRoutes.js";
 import adminOrderRoutes from "./routes/adminOrderRoutes.js"; // Import new file
 import { autoSuggest, getPlaceDetails } from './services/mapplsService.js';
+
+import { supabaseAdmin } from "./config/supabase.js";
 // Note: Ensure the path matches where you created the file. 
 // If you put it in 'services', use './services/mapplsService.js'.
 import cookieParser from "cookie-parser"; // Ensure this is imported
@@ -26,13 +28,37 @@ const PORT = process.env.PORT || 3000;
 
 app.use(helmet());
 
-// Configure CORS
-app.use(
-  cors({
-    origin: "http://localhost:5173", // Frontend origin
-    credentials: true,               // Allow cookies and authorization headers
-  })
-);
+// Whitelist the origins you use in dev
+const WHITELIST = [
+  "http://localhost:5173",
+  "http://127.0.0.1:5173",
+  "http://192.168.10.18:5173", // your LAN machine if you use that
+  // add any other local dev hosts you use
+];
+
+// More permissive fallback (echo origin) — good for dev only
+const corsOptions = {
+  origin: function (origin, callback) {
+    // allow requests with no origin (like curl, mobile apps, or server-to-server)
+    if (!origin) return callback(null, true);
+
+    if (WHITELIST.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else {
+      // you may want to allow all in dev: callback(null, true)
+      callback(new Error("CORS: Not allowed by CORS"));
+    }
+  },
+  credentials: true, // allow cookies/auth headers
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With", "Accept"],
+};
+
+app.use(cors(corsOptions));
+
+// Ensure preflight is handled for all routes
+app.options("*", cors(corsOptions));
+
 app.use(express.json());
 app.use(cookieParser());
 
@@ -66,7 +92,6 @@ app.use("/api/cart", cartRoutes);
 app.use("/api/contact", contactRoutes);
 app.use("/api/profile", profileRoutes);
 app.use("/api/orders", orderRoutes);
-
 app.use("/api/admin/coupons", adminCouponRoutes);
 app.use("/api/admin/reviews", adminReviewsRoutes);
 app.use("/api/admin/orders", adminOrderRoutes);
