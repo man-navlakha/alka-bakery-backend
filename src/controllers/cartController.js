@@ -550,3 +550,78 @@ export const removeCoupon = async (req, res) => {
     res.status(500).json({ error: "Failed to remove coupon" });
   }
 };
+
+
+// --- NEW FUNCTION: Merge Order to Cart ---
+export const mergeOrderToCart = async (req, res) => {
+  try {
+    const { orderId } = req.body;
+    const userId = getUserIdFromRequest(req);
+    const incomingCartId = getCartIdFromRequest(req);
+
+    // 1. Fetch Order Items
+    const { data: order } = await supabase
+      .from("orders")
+      .select("*, order_items(*)")
+      .eq("id", orderId)
+      .single();
+
+    if (!order) return res.status(404).json({ error: "Order not found" });
+
+    // 2. Get/Create Active Cart
+    const cart = await findOrCreateCart({ cartId: incomingCartId, userId });
+
+    // 3. Add Items to Cart
+    for (const item of order.order_items) {
+      // Logic to find product details again (price might have changed)
+      const { data: product } = await supabase
+        .from("products")
+        .select("id, price_per_100g, price_per_pc, product_unit_options(label, price, grams)")
+        .eq("id", item.product_id)
+        .single();
+
+      if (!product) continue; // Product might be deleted
+
+      // Determine current price
+      let unitPrice = 0;
+      let variantLabel = item.variant_label;
+      let grams = item.grams;
+
+      if (item.unit === 'gm') {
+         unitPrice = (grams / 100) * (product.price_per_100g || 0);
+      } else if (item.unit === 'pc') {
+         unitPrice = product.price_per_pc || 0;
+      } else if (item.unit === 'variant') {
+         const opt = product.product_unit_options?.find(o => o.label === variantLabel);
+         if (opt) {
+            unitPrice = opt.price;
+            grams = opt.grams;
+         } else {
+             continue; // Variant no longer exists
+         }
+      }
+
+      // Insert into cart
+      await supabase.from("cart_items").insert({
+        cart_id: cart.id,
+        product_id: item.product_id,
+        unit: item.unit,
+        quantity: item.quantity,
+        grams: grams,
+        variant_label: variantLabel,
+        unit_price: unitPrice,
+        line_total: unitPrice * item.quantity,
+        is_gift: false
+      });
+    }
+
+    // 4. Recalculate & Return
+    const full = await recalcTotals(cart.id);
+    res.setHeader("x-cart-id", full.id);
+    return res.json(mapCartResponse(full));
+
+  } catch (error) {
+    console.error("Re-order error:", error);
+    res.status(500).json({ error: "Failed to re-order" });
+  }
+};

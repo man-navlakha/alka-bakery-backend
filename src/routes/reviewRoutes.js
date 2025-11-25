@@ -1,14 +1,21 @@
-// reviewRoutes.js
+// src/routes/reviewRoutes.js
 import express from "express";
-import { listReviews, reviewsSummary, createReview, /* other handlers */ } from "../controllers/reviewController.js";
+import { 
+  listReviews, 
+  reviewsSummary, 
+  createReview, 
+  getUserReviewedProducts // <--- Import this
+} from "../controllers/reviewController.js";
+import { protect } from "../middleware/authMiddleware.js";
 
 const router = express.Router();
 
+// Public routes
 router.get("/products/:productId/reviews", listReviews);
 router.get("/products/:productId/reviews/summary", reviewsSummary);
-router.post("/products/:productId/reviews", createReview); // your createReview from earlier
+router.post("/products/:productId/reviews", createReview);
 
-// helpful, replies etc...
-// router.post("/reviews/:id/helpful", markHelpful);
+// Protected routes
+router.get("/me/products", protect, getUserReviewedProducts); // <--- Add this line
 
 export default router;

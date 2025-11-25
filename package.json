@@ -1,6 +1,6 @@
 {
   "name": "alka-bakery-backend",
-  "version": "PAYMENT ONLINE ADDED - dt.23-11-25 - 1.08.10",
+  "version": "TRACKING - dt.25-11-25 - 1.09.08",
   "type": "module",
   "scripts": {
     "start": "node api/index.js",
@@ -29,6 +29,7 @@
     "node-cache": "^5.1.2",
     "node-fetch": "^3.3.2",
     "nodemailer": "^6.9.4",
+    "pdfkit": "^0.17.2",
     "razorpay": "^2.9.6",
     "react-leaflet": "^5.0.0",
     "streamifier": "^0.1.1"

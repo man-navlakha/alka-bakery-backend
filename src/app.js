@@ -10,6 +10,7 @@ import reviewRoutes from "./routes/reviewRoutes.js";
 import addressRoutes from "./routes/addressRoutes.js";
 import adminReviewsRoutes from "./routes/adminReviewsRoutes.js";
 import adminCouponRoutes from "./routes/adminCouponRoutes.js";
+import trackingRoutes from "./routes/trackingRoutes.js";
 import orderRoutes from "./routes/orderRoutes.js";
 import adminOrderRoutes from "./routes/adminOrderRoutes.js"; // Import new file
 import { autoSuggest, getPlaceDetails } from './services/mapplsService.js';
@@ -93,6 +94,7 @@ app.use("/api/contact", contactRoutes);
 app.use("/api/profile", profileRoutes);
 app.use("/api/orders", orderRoutes);
 app.use("/api/admin/coupons", adminCouponRoutes);
+app.use("/api/tracking", trackingRoutes);
 app.use("/api/admin/reviews", adminReviewsRoutes);
 app.use("/api/admin/orders", adminOrderRoutes);
 
@@ -140,7 +142,13 @@ app.use((err, req, res, next) => {
 });
 // --- Start Server ---
 app.listen(PORT, () => {
-  console.log(`🍰 Alka Bakery API is running on port http://localhost:${PORT}`);
+  console.log(`
+  ╔═════════════════════════════════════════════╗
+  ║   🍰 Alka Bakery API is now baking!         ║
+  ║   🚀 Running at: http://localhost:${PORT}      ║
+  ╚═════════════════════════════════════════════╝
+  `);
 });
+
 
 export default app;

@@ -9,6 +9,7 @@ import {
   applyCoupon,
   removeCoupon,
   getAvailableCoupons,
+  mergeOrderToCart
 } from "../controllers/cartController.js";
 import { identifyUser } from "../middleware/authMiddleware.js";
 
@@ -34,5 +35,8 @@ router.post("/apply-coupon", asyncHandler(applyCoupon));
 
 // DELETE /api/cart/coupon
 router.delete("/coupon", asyncHandler(removeCoupon));
+
+// POST /api/cart/merge-order
+router.post("/merge-order", asyncHandler(mergeOrderToCart));
 
 export default router;

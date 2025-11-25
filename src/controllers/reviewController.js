@@ -5,7 +5,7 @@ import streamifier from "streamifier";
 import { v2 as cloudinary } from "cloudinary";
 import { createClient } from "@supabase/supabase-js";
 import path from "path";
-
+import { supabaseAdmin } from "../config/supabase.js";
 // ---------- CONFIG (env) ----------
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
@@ -242,4 +242,24 @@ export const reviewsSummary = asyncHandler(async (req, res) => {
   });
   const average = total ? +(sum / total).toFixed(2) : 0;
   return res.json({ average, total, counts });
+});
+
+
+// --- NEW: Batch Fetch for User Reviews ---
+export const getUserReviewedProducts = asyncHandler(async (req, res) => {
+  const userId = req.user.id;
+
+  const { data, error } = await supabaseAdmin
+    .from("reviews")
+    .select("product_id")
+    .eq("user_id", userId);
+
+  if (error) {
+    console.error("Error fetching user reviews:", error);
+    return res.status(500).json({ message: "Failed to fetch review status" });
+  }
+
+  // Return simple array of IDs: ["id1", "id2"]
+  const ids = data.map(r => r.product_id);
+  res.json(ids);
 });
